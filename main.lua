@@ -167,31 +167,32 @@ local function fallbackScreensaver(saver, original_show)
     local settings = G_reader_settings
     local original_type = saver.screensaver_type
     local fallback = fallbackType()
-    local had_setting = settings:has("screensaver_type")
-    local saved_setting = settings:readSetting("screensaver_type")
-    settings:saveSetting("screensaver_type", fallback)
-
     local prefixed_key = saver.prefix and saver.prefix ~= "" and (saver.prefix .. "screensaver_type") or nil
-    local had_prefixed, saved_prefixed
-    if prefixed_key then
-        had_prefixed = settings:has(prefixed_key)
-        saved_prefixed = settings:readSetting(prefixed_key)
-        settings:saveSetting(prefixed_key, fallback)
+
+    local orig_readSetting = settings.readSetting
+    settings.readSetting = function(self, key, default)
+        if key == "screensaver_type" or (prefixed_key and key == prefixed_key) then
+            return fallback
+        end
+        return orig_readSetting(self, key, default)
     end
 
     local event = saver.prefix and saver.prefix ~= "" and saver.prefix:sub(1, -2) or nil
-    saver:setup(event, saver.event_message)
-    saver.screensaver_type = fallback
-    original_show(saver)
-
-    if prefixed_key then
-        if had_prefixed then settings:saveSetting(prefixed_key, saved_prefixed)
-        else settings:delSetting(prefixed_key) end
+    if type(saver.setup) == "function" then
+        saver:setup(event, saver.event_message)
     end
-    if had_setting then settings:saveSetting("screensaver_type", saved_setting)
-    else settings:delSetting("screensaver_type") end
+    saver.screensaver_type = fallback
+
+    local ok, err = pcall(original_show, saver)
+
+    settings.readSetting = orig_readSetting
     saver.screensaver_type = original_type
+
+    if not ok then
+        error(err)
+    end
 end
+
 
 function ReadingFolio:_showScreensaver(saver, original_show)
     local ui = saver.ui or ReaderUI.instance
