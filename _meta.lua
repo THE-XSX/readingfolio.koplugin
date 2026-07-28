@@ -5,7 +5,6 @@ local I18n = dofile(PLUGIN_ROOT .. "i18n.lua")
 local translate = I18n.new(PLUGIN_ROOT, { language_setting = Constants.LANGUAGE_SETTING })
 
 return {
-    name = "readingfolio",
     fullname = translate("Reading Folio"),
     description = translate([[Show a configurable reading folio as a preview or sleep screen.]]),
 }
