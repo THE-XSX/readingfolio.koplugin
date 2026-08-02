@@ -115,19 +115,11 @@ function ReadingFolio:onDispatcherRegisterActions()
         title = translate("Reading Folio"),
         reader = true,
     })
-    Dispatcher:registerAction("reading_folio_quicklook", {
-        category = "none",
-        event = "QuickLook",
-        title = translate("Reading Folio"),
-        reader = true,
-    })
 end
 
 function ReadingFolio:onShowReadingFolio()
     self:showReceipt()
 end
-
-ReadingFolio.onQuickLook = ReadingFolio.onShowReadingFolio
 
 function ReadingFolio:showReceipt()
     local ui = self.ui
