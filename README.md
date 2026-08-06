@@ -142,7 +142,7 @@ Reading Folio is a standalone KOReader plugin that formats your book cover, read
 - **15 Built-in Layout Styles**: Swiss grid, Terminal, Quote poster, Ticket, Cover dominant, Gallery, Dossier, Stamp, Book post, Architecture, Japanese Minimal, and Four Gentlemen (Plum, Orchid, Bamboo, Chrysanthemum).
 - **Sleep Screen & Auto Rotation**: Easily set as your KOReader sleep screen. Landscape styles automatically rotate orientation when entering sleep mode and restore upon wake.
 - **Live Preview Menu**: All menu adjustments (styles, backgrounds, ratio, font size deltas, item toggles) refresh the preview live with `keep_menu_open`.
-- **Flexible Card & Font Controls**: Customize card aspect ratio (0.30–1.00), border width, background color, drop shadow, cover scale, and precise font size deltas (-8 to +12).
+- **Flexible Card & Font Controls**: Customize card aspect ratio (0.30–1.00), border width, background color, drop shadow, cover scale, and precise font size deltas (-20 to +20).
 - **15 Toggleable Content Items**: Individually show/hide title, author, cover, chapter, page count, percentage, progress bar, chapter/book time remaining, total/today reading time, battery level, clock, highlights, and custom messages.
 
 ---
@@ -158,7 +158,7 @@ Reading Folio is a standalone KOReader plugin that formats your book cover, read
 - 修复**透明屏幕背景息屏问题**：修复在息屏屏保托管（`_showScreensaver`）过程中调用 `Screen:clear()` 清屏导致透明背景失效变白的问题，确保透明背景下底层阅读页面完美透出。
 - 优化**语言设置独立解耦**：菜单中的「语言」选项改为仅控制阅读卡片/海报显示的语言，插件本身的菜单语言恒定保持与 KOReader 系统语言一致。
 - 优化**菜单交互与即时预览 (Live Preview & Keep Menu Open)**：所有样式选择、语言切换、背景模式、字号微调及卡片外观调整在菜单中更改时自动刷新全屏预览，并保持菜单开启状态。
-- 新增**自定义字号偏移输入 (Custom Font Size Delta)**：大 / 中 / 小字号微调新增「自定义」数额弹窗，支持自由输入 `-8` 至 `+12` 的精细偏移值。
+- 新增**自定义字号偏移输入 (Custom Font Size Delta)**：大 / 中 / 小字号微调新增「自定义」数额弹窗，支持自由输入 `-20` 至 `+20` 的精细偏移值。
 
 ### 2026-07-27
 
