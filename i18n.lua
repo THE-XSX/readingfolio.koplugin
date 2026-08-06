@@ -27,7 +27,7 @@ function I18n.new(plugin_root, options)
     local registry = dofile(plugin_root .. "locale_registry.lua").new(plugin_root)
     return setmetatable({
         registry = registry,
-        language_setting = options.language_setting or "reading_folio_language",
+        language_setting = options.language_setting,
     }, {
         __index = Translator,
         __call = function(self, text) return self:translate(text) end,
@@ -35,9 +35,11 @@ function I18n.new(plugin_root, options)
 end
 
 function Translator:language()
-    local selected = readSetting(self.language_setting)
-    if selected and selected ~= "system" and self.registry:get(selected) then
-        return selected
+    if self.language_setting then
+        local selected = readSetting(self.language_setting)
+        if selected and selected ~= "system" and self.registry:get(selected) then
+            return selected
+        end
     end
     return self.registry:resolve(readSetting("language") or gettextLanguage() or os.getenv("LANG"))
 end

@@ -5,7 +5,6 @@ return {
     BG_IMAGE_MODE_SETTING = "reading_folio_bg_image_mode",
     CONTENT_MODE_SETTING = "reading_folio_content_mode",
     COVER_SCALE_SETTING = "reading_folio_cover_scale",
-    SHOW_COVER_SETTING = "reading_folio_show_cover",
     STYLE_SETTING = "reading_folio_style",
     LANGUAGE_SETTING = "reading_folio_language",
     PREVIOUS_SCREENSAVER_TYPE = "reading_folio_previous_screensaver_type",
@@ -42,5 +41,4 @@ return {
     CONTENT_MODE_RANDOM = "random",
 
     DEFAULT_STYLE = "swiss",
-    LEGACY_STYLES = {},
 }

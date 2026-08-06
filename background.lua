@@ -53,10 +53,12 @@ function Background:get(ui)
     elseif choice == "black" then
         return Blitbuffer.COLOR_BLACK, nil
     elseif choice == "random_image" then
-        return nil, self:_imageWidget(self:_randomImage())
+        local widget = self:_imageWidget(self:_randomImage())
+        if widget then return nil, widget end
     elseif choice == "book_cover" then
         local cover = ui and ui.document and ui.bookinfo and ui.bookinfo:getCoverImage(ui.document)
-        return nil, self:_imageWidget(cover)
+        local widget = self:_imageWidget(cover)
+        if widget then return nil, widget end
     end
     return Blitbuffer.COLOR_WHITE, nil
 end
@@ -64,7 +66,8 @@ end
 function Background:compose(ui, receipt, dark)
     if not receipt then return nil end
     local color, image = self:get(ui)
-    if dark and not image then color = Blitbuffer.COLOR_BLACK end
+    local choice = G_reader_settings:readSetting(self.constants.BG_SETTING) or "white"
+    if dark and not image and choice ~= "transparent" then color = Blitbuffer.COLOR_BLACK end
     if not color and not image then return receipt end
     local size = self.screen:getSize()
     if not image then

@@ -121,10 +121,14 @@ function Renderer:_layout(defaults)
 end
 
 function Renderer:selectedStyle()
-    local style_id = self.registry:normalize(
-        G_reader_settings:readSetting(self.constants.STYLE_SETTING),
-        self.constants
-    )
+    local style_setting = G_reader_settings:readSetting(self.constants.STYLE_SETTING)
+    if style_setting == "random" then
+        local list = self.registry:list()
+        if #list > 0 then
+            return list[math.random(#list)]
+        end
+    end
+    local style_id = self.registry:normalize(style_setting, self.constants)
     return self.registry:get(style_id)
 end
 
@@ -204,7 +208,7 @@ function Renderer:_prepareHighlight(data, layout, theme, fonts, defaults)
         table.insert(metadata, data.highlight.chapter)
     end
     local page = data.highlight.pageref or data.highlight.pageno
-    if not page and type(data.highlight.page) == "string" and data.ui.document.getPageFromXPointer then
+    if not page and type(data.highlight.page) == "string" and data.ui and data.ui.document and data.ui.document.getPageFromXPointer then
         local ok, resolved = pcall(data.ui.document.getPageFromXPointer, data.ui.document, data.highlight.page)
         if ok then page = resolved end
     end
@@ -224,12 +228,13 @@ function Renderer:_prepareHighlight(data, layout, theme, fonts, defaults)
     }
     if meta then
         table.insert(widgets, VerticalSpan:new{ width = layout.scaled(8) })
-        table.insert(widgets, TextWidget:new{
+        table.insert(widgets, TextBoxWidget:new{
             text = meta,
             face = Font:getFace("cfont", fonts.small),
+            width = layout.content_width,
             fgcolor = theme.muted,
-            padding = 0,
-            align = "center",
+            bgcolor = theme.background,
+            alignment = "center",
         })
     end
     return widgets, text, count
@@ -308,12 +313,13 @@ function Renderer:_context(data, style, layout, theme, fonts)
     end
     function context.divider(width, dashed)
         if dashed then
-            return TextWidget:new{
+            return TextBoxWidget:new{
                 text = string.rep("-", math.max(12, math.floor(width / math.max(scaled(8), 1)))),
                 face = Font:getFace("cfont", fonts.small),
+                width = width,
                 fgcolor = theme.muted,
-                padding = 0,
-                align = "center",
+                bgcolor = theme.background,
+                alignment = "center",
             }
         end
         return progressWidget(width, scaled(1), 1, { background = theme.faint, fill = theme.muted })
@@ -326,10 +332,10 @@ function Renderer:_context(data, style, layout, theme, fonts)
     return context
 end
 
-function Renderer:build(ui, state)
+function Renderer:build(ui, state, style)
     local data = self.data_provider:collect(ui, state)
     if not data then return nil end
-    local style = self:selectedStyle()
+    style = style or self:selectedStyle()
     local style_id = style.id
     local defaults = style.defaults
     local layout = self:_layout(defaults)

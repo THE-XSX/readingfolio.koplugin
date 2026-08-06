@@ -8,12 +8,14 @@ local Menu = dofile(PLUGIN_ROOT .. "menu.lua")
 local Renderer = dofile(PLUGIN_ROOT .. "renderer.lua")
 local Registry = dofile(PLUGIN_ROOT .. "style_registry.lua")
 local I18n = dofile(PLUGIN_ROOT .. "i18n.lua")
-local translate = I18n.new(PLUGIN_ROOT, { language_setting = Constants.LANGUAGE_SETTING })
+local menu_translate = I18n.new(PLUGIN_ROOT)
+local display_translate = I18n.new(PLUGIN_ROOT, { language_setting = Constants.LANGUAGE_SETTING })
 
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
+local ffiUtil = require("ffi/util")
 local Font = require("ui/font")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
@@ -21,6 +23,7 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local ReaderUI = require("apps/reader/readerui")
 local Screensaver = require("ui/screensaver")
+local ScreenSaverLockWidget = require("ui/widget/screensaverlockwidget")
 local ScreenSaverWidget = require("ui/widget/screensaverwidget")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
@@ -43,7 +46,7 @@ function QuickLook:init()
     else
         self[1] = CenterContainer:new{
             dimen = self.dimen,
-            TextWidget:new{ text = translate("Reading Folio unavailable"), face = Font:getFace("cfont", 20) },
+            TextWidget:new{ text = menu_translate("Reading Folio unavailable"), face = Font:getFace("cfont", 20) },
         }
     end
     if Device:hasKeys() then
@@ -60,6 +63,9 @@ function QuickLook:init()
 end
 
 function QuickLook:onClose()
+    if self.plugin and self.plugin.quick_look_widget == self then
+        self.plugin.quick_look_widget = nil
+    end
     UIManager:close(self)
     return true
 end
@@ -89,18 +95,18 @@ local ReadingFolio = WidgetContainer:extend{
 
 function ReadingFolio:init()
     self.registry = Registry.new(PLUGIN_ROOT)
-    self.data_provider = Data.new(Constants, translate)
+    self.data_provider = Data.new(Constants, display_translate)
     self.renderer = Renderer.new{
         constants = Constants,
         data_provider = self.data_provider,
         registry = self.registry,
-        translate = translate,
+        translate = display_translate,
     }
     self.background = Background.new(Constants)
     self.menu_builder = Menu.new{
         constants = Constants,
         registry = self.registry,
-        translate = translate,
+        translate = menu_translate,
     }
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
@@ -112,7 +118,7 @@ function ReadingFolio:onDispatcherRegisterActions()
     Dispatcher:registerAction("reading_folio_preview", {
         category = "none",
         event = "ShowReadingFolio",
-        title = translate("Reading Folio"),
+        title = menu_translate("Reading Folio"),
         reader = true,
     })
 end
@@ -125,18 +131,23 @@ function ReadingFolio:showReceipt()
     local ui = self.ui
     UIManager:nextTick(function()
         if not ui or not ui.document then return end
-        UIManager:show(QuickLook:new{
+        if self.quick_look_widget then
+            UIManager:close(self.quick_look_widget)
+            self.quick_look_widget = nil
+        end
+        self.quick_look_widget = QuickLook:new{
             plugin = self,
             ui = ui,
             state = ui.view and ui.view.state,
-        })
+        }
+        UIManager:show(self.quick_look_widget)
     end)
 end
 
 function ReadingFolio:addToMainMenu(menu_items)
     menu_items.reading_folio = {
         sorting_hint = "tools",
-        text = translate("Reading Folio"),
+        text = menu_translate("Reading Folio"),
         sub_item_table = self.menu_builder:items(self),
     }
 end
@@ -196,10 +207,21 @@ function ReadingFolio:_showScreensaver(saver, original_show)
         UIManager:close(saver.screensaver_widget)
         saver.screensaver_widget = nil
     end
+    if saver.screensaver_lock_widget then
+        UIManager:close(saver.screensaver_lock_widget)
+        saver.screensaver_lock_widget = nil
+    end
 
     Device.screen_saver_mode = true
     local rotation = Screen:getRotationMode()
-    local landscape = self.renderer:prefersLandscape()
+    local selected_style = self.renderer:selectedStyle()
+    local landscape = selected_style and selected_style.defaults.landscape == true
+    local with_gesture_lock = Device:isTouchDevice()
+        and G_reader_settings:readSetting("screensaver_delay") == "gesture"
+    local orig_dimen = with_gesture_lock and {
+        w = Screen:getWidth(),
+        h = Screen:getHeight(),
+    } or nil
     Device.orig_rotation_mode = rotation
     if landscape and bit.band(rotation, 1) == 0 then
         Screen:setRotationMode(Screen.DEVICE_ROTATED_CLOCKWISE or 1)
@@ -207,11 +229,25 @@ function ReadingFolio:_showScreensaver(saver, original_show)
         Screen:setRotationMode(Screen.DEVICE_ROTATED_UPRIGHT)
     else
         Device.orig_rotation_mode = nil
+        orig_dimen = nil
     end
 
-    local receipt, style = self.renderer:build(ui, ui.view and ui.view.state)
+    local bg_setting = G_reader_settings:readSetting(Constants.BG_SETTING) or "white"
+    if Device:hasEinkScreen() and (bg_setting ~= "transparent" or Device.orig_rotation_mode ~= nil) then
+        Screen:clear()
+        Screen:refreshFull(0, 0, Screen:getWidth(), Screen:getHeight())
+        if Device:isKobo() and Device:isSunxi() then
+            ffiUtil.usleep(150 * 1000)
+        end
+    end
+
+    local receipt, style = self.renderer:build(ui, ui.view and ui.view.state, selected_style)
     if not receipt then
         logger.warn("Reading Folio: render failed; using the default screensaver")
+        if Device.orig_rotation_mode then
+            Screen:setRotationMode(Device.orig_rotation_mode)
+            Device.orig_rotation_mode = nil
+        end
         fallbackScreensaver(saver, original_show)
         return
     end
@@ -223,6 +259,13 @@ function ReadingFolio:_showScreensaver(saver, original_show)
     saver.screensaver_widget.modal = true
     saver.screensaver_widget.dithered = true
     UIManager:show(saver.screensaver_widget, "full")
+    if with_gesture_lock then
+        saver.screensaver_lock_widget = ScreenSaverLockWidget:new{
+            ui = ui,
+            orig_dimen = orig_dimen,
+        }
+        UIManager:show(saver.screensaver_lock_widget)
+    end
 end
 
 function ReadingFolio:_installScreensaverAdapter()

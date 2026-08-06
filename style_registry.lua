@@ -49,6 +49,7 @@ function Registry:get(id)
 end
 
 function Registry:normalize(id, constants)
+    if id == "random" then return "random" end
     if id and self.by_id[id] then
         return id
     end

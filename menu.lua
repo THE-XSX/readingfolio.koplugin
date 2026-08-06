@@ -1,4 +1,5 @@
 local InputDialog = require("ui/widget/inputdialog")
+local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 
 local Menu = {}
@@ -17,13 +18,22 @@ local function save(key, value)
     G_reader_settings:flush()
 end
 
+function Menu:_preview()
+    if self._plugin then
+        self._plugin:showReceipt()
+    end
+end
+
 function Menu:_radio(text, key, value, default)
     return {
         text = self.translate(text),
         checked_func = function()
             return (G_reader_settings:readSetting(key) or default) == value
         end,
-        callback = function() save(key, value) end,
+        callback = function()
+            save(key, value)
+            self:_preview()
+        end,
         radio = true,
         keep_menu_open = true,
     }
@@ -36,6 +46,7 @@ function Menu:_toggle(text, key)
         callback = function()
             G_reader_settings:flipNilOrTrue(key)
             G_reader_settings:flush()
+            self:_preview()
         end,
         keep_menu_open = true,
     }
@@ -48,14 +59,29 @@ function Menu:_styleItems()
         table.insert(items, {
             text = self.translate(style_label),
             checked_func = function()
-                local current = self.registry:normalize(G_reader_settings:readSetting(self.constants.STYLE_SETTING), self.constants)
-                return current == style_id
+                local raw = G_reader_settings:readSetting(self.constants.STYLE_SETTING)
+                return raw == style_id or (not raw and style_id == self.constants.DEFAULT_STYLE)
             end,
-            callback = function() save(self.constants.STYLE_SETTING, style_id) end,
+            callback = function()
+                save(self.constants.STYLE_SETTING, style_id)
+                self:_preview()
+            end,
             radio = true,
             keep_menu_open = true,
         })
     end
+    table.insert(items, {
+        text = self.translate("Random style"),
+        checked_func = function()
+            return G_reader_settings:readSetting(self.constants.STYLE_SETTING) == "random"
+        end,
+        callback = function()
+            save(self.constants.STYLE_SETTING, "random")
+            self:_preview()
+        end,
+        radio = true,
+        keep_menu_open = true,
+    })
     return items
 end
 
@@ -68,7 +94,10 @@ function Menu:_languageItems()
         {
             text = tr("Follow system"),
             checked_func = function() return selected() == "system" end,
-            callback = function() save(K.LANGUAGE_SETTING, "system") end,
+            callback = function()
+                save(K.LANGUAGE_SETTING, "system")
+                self:_preview()
+            end,
             radio = true,
             keep_menu_open = true,
         },
@@ -78,7 +107,10 @@ function Menu:_languageItems()
         table.insert(items, {
             text = locale_label,
             checked_func = function() return selected() == locale_id end,
-            callback = function() save(K.LANGUAGE_SETTING, locale_id) end,
+            callback = function()
+                save(K.LANGUAGE_SETTING, locale_id)
+                self:_preview()
+            end,
             radio = true,
             keep_menu_open = true,
         })
@@ -96,11 +128,123 @@ function Menu:_fontDeltaItems(key)
             checked_func = function()
                 return (tonumber(G_reader_settings:readSetting(key)) or 0) == delta
             end,
-            callback = function() save(key, delta) end,
+            callback = function()
+                save(key, delta)
+                self:_preview()
+            end,
             radio = true,
             keep_menu_open = true,
         })
     end
+    table.insert(items, self:_customFontDeltaItem(key))
+    return items
+end
+
+function Menu:_customFontDeltaItem(key)
+    local tr = self.translate
+    return {
+        text = tr("Custom"),
+        checked_func = function()
+            local current = tonumber(G_reader_settings:readSetting(key)) or 0
+            for _, preset in ipairs({ -2, 0, 2, 4, 6 }) do
+                if current == preset then return false end
+            end
+            return true
+        end,
+        callback = function()
+            local dialog
+            dialog = InputDialog:new{
+                title = tr("Text size delta (-20 to +20)"),
+                input = tostring(G_reader_settings:readSetting(key) or "0"),
+                input_type = "number",
+                buttons = {{
+                    { text = tr("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+                    {
+                        text = tr("Set"),
+                        is_enter_default = true,
+                        callback = function()
+                            local text = (dialog:getInputText() or ""):gsub(",", ".")
+                            local value = tonumber(text)
+                            if not value or value < -20 or value > 20 then
+                                UIManager:show(Notification:new{
+                                    text = tr("Font size delta must be between -20 and +20."),
+                                })
+                                return true
+                            end
+                            value = math.floor(value + 0.5)
+                            save(key, value)
+                            UIManager:close(dialog)
+                            self:_preview()
+                        end,
+                    },
+                }},
+            }
+            UIManager:show(dialog)
+        end,
+        radio = true,
+        keep_menu_open = true,
+    }
+end
+
+function Menu:_coverScaleItems()
+    local K, tr = self.constants, self.translate
+    local function current()
+        return tonumber(G_reader_settings:readSetting(K.COVER_SCALE_SETTING)) or 1
+    end
+    local items = {}
+    for _, scale in ipairs({ 0.5, 0.75, 1 }) do
+        table.insert(items, {
+            text = scale == 1 and tr("100% (default)") or string.format("%d%%", scale * 100),
+            checked_func = function() return math.abs(current() - scale) < 0.001 end,
+            callback = function()
+                save(K.COVER_SCALE_SETTING, scale)
+                self:_preview()
+            end,
+            radio = true,
+            keep_menu_open = true,
+        })
+    end
+    table.insert(items, {
+        text = tr("Custom"),
+        checked_func = function()
+            local value = current()
+            for _, scale in ipairs({ 0.5, 0.75, 1 }) do
+                if math.abs(value - scale) < 0.001 then return false end
+            end
+            return true
+        end,
+        callback = function()
+            local dialog
+            dialog = InputDialog:new{
+                title = tr("Custom cover scale (0.00 - 1.00)"),
+                input = string.format("%.2f", current()),
+                input_type = "number",
+                buttons = {{
+                    { text = tr("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+                    {
+                        text = tr("Set"),
+                        is_enter_default = true,
+                        callback = function()
+                            local text = (dialog:getInputText() or ""):gsub(",", ".")
+                            local value = tonumber(text)
+                            if not value or value < 0 or value > 1 then
+                                UIManager:show(Notification:new{
+                                    text = tr("Cover scale must be between 0.00 and 1.00."),
+                                })
+                                return true
+                            end
+                            save(K.COVER_SCALE_SETTING, value)
+                            UIManager:close(dialog)
+                            self:_preview()
+                        end,
+                    },
+                }},
+            }
+            UIManager:show(dialog)
+        end,
+        radio = true,
+        keep_menu_open = true,
+    })
     return items
 end
 
@@ -126,18 +270,25 @@ function Menu:_ratioItems()
                         text = tr("Set"),
                         is_enter_default = true,
                         callback = function()
-                            local value = tonumber((dialog:getInputText() or ""):gsub(",", "."))
-                            if value then
-                                if value > 1 then value = value / 100 end
-                                save(K.CARD_RATIO_CUSTOM, math.max(0.30, math.min(1, value)))
-                                UIManager:close(dialog)
+                            local text = (dialog:getInputText() or ""):gsub(",", ".")
+                            local value = tonumber(text)
+                            if value and value > 1 and value <= 100 then
+                                value = value / 100
                             end
+                            if not value or value < 0.30 or value > 1 then
+                                UIManager:show(Notification:new{
+                                    text = tr("Card ratio must be between 0.30 and 1.00."),
+                                })
+                                return true
+                            end
+                            save(K.CARD_RATIO_CUSTOM, value)
+                            UIManager:close(dialog)
+                            self:_preview()
                         end,
                     },
                 }},
             }
             UIManager:show(dialog)
-            dialog:onShowKeyboard()
         end,
         radio = true,
         keep_menu_open = true,
@@ -147,6 +298,7 @@ end
 
 function Menu:items(plugin)
     local K, tr = self.constants, self.translate
+    self._plugin = plugin
     return {
         {
             text = tr("Preview Reading Folio"),
@@ -165,6 +317,7 @@ function Menu:items(plugin)
                     save(K.PREVIOUS_SCREENSAVER_TYPE, previous)
                     save("screensaver_type", "reading_folio")
                 end
+                self:_preview()
             end,
             keep_menu_open = true,
         },
@@ -201,8 +354,15 @@ function Menu:items(plugin)
                 {
                     text = tr("Card drop shadow"),
                     checked_func = function() return G_reader_settings:isTrue(K.SHADOW) end,
-                    callback = function() save(K.SHADOW, not G_reader_settings:isTrue(K.SHADOW)) end,
+                    callback = function()
+                        save(K.SHADOW, not G_reader_settings:isTrue(K.SHADOW))
+                        self:_preview()
+                    end,
                     keep_menu_open = true,
+                },
+                {
+                    text = tr("Cover scale"),
+                    sub_item_table = self:_coverScaleItems(),
                 },
                 {
                     text = tr("Text size"),
