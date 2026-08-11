@@ -25,6 +25,7 @@ function Renderer.new(options)
         data_provider = assert(options.data_provider),
         registry = assert(options.registry),
         translate = assert(options.translate),
+        custom_layout = assert(options.custom_layout),
         screen = Device.screen,
     }, Renderer)
 end
@@ -78,8 +79,11 @@ end
 function Renderer:_layout(defaults)
     local raw_width, raw_height = self.screen:getWidth(), self.screen:getHeight()
     local landscape = defaults.landscape == true
-    local screen_width = landscape and raw_width or math.min(raw_width, raw_height)
-    local screen_height = landscape and raw_height or math.max(raw_width, raw_height)
+    local use_screen_orientation = defaults.use_screen_orientation == true
+    local screen_width = use_screen_orientation and raw_width
+        or (landscape and raw_width or math.min(raw_width, raw_height))
+    local screen_height = use_screen_orientation and raw_height
+        or (landscape and raw_height or math.max(raw_width, raw_height))
     local function scaled(value) return math.max(1, self.screen:scaleBySize(value)) end
 
     local ratio_mode = G_reader_settings:readSetting(self.constants.CARD_RATIO_MODE) or "default"
@@ -123,9 +127,12 @@ end
 function Renderer:selectedStyle()
     local style_setting = G_reader_settings:readSetting(self.constants.STYLE_SETTING)
     if style_setting == "random" then
-        local list = self.registry:list()
-        if #list > 0 then
-            return list[math.random(#list)]
+        local candidates = {}
+        for _, style in ipairs(self.registry:list()) do
+            if style.id ~= "custom" then table.insert(candidates, style) end
+        end
+        if #candidates > 0 then
+            return candidates[math.random(#candidates)]
         end
     end
     local style_id = self.registry:normalize(style_setting, self.constants)
@@ -137,7 +144,7 @@ function Renderer:prefersLandscape()
     return style and style.defaults.landscape == true
 end
 
-function Renderer:_theme(defaults)
+function Renderer:_theme(defaults, force_dark)
     local background = Blitbuffer.COLOR_GRAY_E
     local setting = G_reader_settings:readSetting(self.constants.CARD_BG) or "light_gray"
     if setting == "pure_white" then
@@ -145,7 +152,7 @@ function Renderer:_theme(defaults)
     elseif setting == "soft_gray" then
         background = Blitbuffer.COLOR_GRAY_D
     end
-    if defaults.dark then
+    if defaults.dark or force_dark then
         return {
             foreground = Blitbuffer.COLOR_WHITE,
             muted = Blitbuffer.COLOR_GRAY_9,
@@ -165,8 +172,9 @@ function Renderer:_theme(defaults)
     }
 end
 
-function Renderer:_coverWidget(data, layout, defaults, requested_width, requested_height)
-    if not defaults.allow_cover or not data.show.cover then return nil end
+function Renderer:_coverWidget(data, layout, defaults, requested_width, requested_height, options)
+    options = options or {}
+    if not defaults.allow_cover or (not options.ignore_visibility and not data.show.cover) then return nil end
     if not defaults.force_cover then
         if data.content_mode == self.constants.CONTENT_MODE_HIGHLIGHT_PROGRESS then return nil end
         if G_reader_settings:readSetting(self.constants.BG_SETTING) == "book_cover" then return nil end
@@ -175,23 +183,25 @@ function Renderer:_coverWidget(data, layout, defaults, requested_width, requeste
     local buffer = data.ui.bookinfo:getCoverImage(data.ui.document)
     if not buffer then return nil end
 
-    local scale_setting = tonumber(G_reader_settings:readSetting(self.constants.COVER_SCALE_SETTING)) or 1
+    local scale_setting = options.ignore_scale and 1
+        or tonumber(G_reader_settings:readSetting(self.constants.COVER_SCALE_SETTING)) or 1
     if scale_setting <= 0 then return nil end
     local width, height = buffer:getWidth(), buffer:getHeight()
-    local bounded_scale = math.min(scale_setting, 1)
     local max_width = math.floor(requested_width
-        and requested_width * bounded_scale
+        and requested_width
         or layout.content_width * scale_setting)
     local max_height = math.floor(requested_height
-        and requested_height * bounded_scale
+        and requested_height
         or layout.screen_height * (layout.compact and 0.38 or 0.48) * scale_setting)
-    local scale = math.min(1, max_width / width, max_height / height)
-    if scale < 1 then
+    local scale = options.ignore_scale
+        and math.min(max_width / width, max_height / height)
+        or math.min(1, max_width / width, max_height / height)
+    if scale ~= 1 then
         width, height = math.max(1, math.floor(width * scale)), math.max(1, math.floor(height * scale))
         buffer = RenderImage:scaleBlitBuffer(buffer, width, height, true)
     end
     return CenterContainer:new{
-        dimen = Geom:new{ w = requested_width or layout.content_width, h = height },
+        dimen = Geom:new{ w = width, h = height },
         ImageWidget:new{ image = buffer, width = width, height = height },
     }
 end
@@ -240,7 +250,7 @@ function Renderer:_prepareHighlight(data, layout, theme, fonts, defaults)
     return widgets, text, count
 end
 
-function Renderer:_footer(data, layout, theme, fonts)
+function Renderer:_footer(data, layout, theme, fonts, options)
     local battery = data.battery ~= "" and TextWidget:new{
         text = data.battery,
         face = Font:getFace("cfont", fonts.small - layout.scaled(1)),
@@ -253,6 +263,9 @@ function Renderer:_footer(data, layout, theme, fonts)
         fgcolor = theme.muted,
         padding = 0,
     } or nil
+    if clock and options and options.runtime then
+        options.runtime.clock_widget = clock
+    end
     if not battery and not clock then return nil end
     local left_width = battery and battery:getSize().w or 0
     local right_width = clock and clock:getSize().w or 0
@@ -263,7 +276,7 @@ function Renderer:_footer(data, layout, theme, fonts)
     }
 end
 
-function Renderer:_context(data, style, layout, theme, fonts)
+function Renderer:_context(data, style, layout, theme, fonts, options)
     local scaled = layout.scaled
     local highlight_widgets, highlight_text, highlight_length = self:_prepareHighlight(data, layout, theme, fonts, style.defaults)
     if data.content_mode == self.constants.CONTENT_MODE_HIGHLIGHT_PROGRESS and not highlight_widgets then
@@ -286,12 +299,21 @@ function Renderer:_context(data, style, layout, theme, fonts)
         fonts = fonts,
         cover = cover,
         highlight_widgets = highlight_widgets,
-        footer = self:_footer(data, layout, theme, fonts),
+        footer = self:_footer(data, layout, theme, fonts, options),
         translate = self.translate,
         scaled = scaled,
+        custom_layout = self.custom_layout,
+        editor_selected = options and options.editor_selected,
+        runtime = options and options.runtime,
     }
     function context.coverFor(max_width, max_height)
         return self:_coverWidget(data, layout, style.defaults, max_width, max_height)
+    end
+    function context.customCover(max_width, max_height)
+        return self:_coverWidget(data, layout, style.defaults, max_width, max_height, {
+            ignore_visibility = true,
+            ignore_scale = true,
+        })
     end
     function context.spacer(amount)
         return VerticalSpan:new{ width = amount or scaled(8) }
@@ -332,19 +354,27 @@ function Renderer:_context(data, style, layout, theme, fonts)
     return context
 end
 
-function Renderer:build(ui, state, style)
-    local data = self.data_provider:collect(ui, state)
+function Renderer:build(ui, state, style, options)
+    options = options or {}
+    local data = options.data or self.data_provider:collect(ui, state)
     if not data then return nil end
+    if options.scene then
+        data.folio_scene = options.scene
+        data.content_mode = options.scene.content_mode or data.content_mode
+    end
     style = style or self:selectedStyle()
     local style_id = style.id
     local defaults = style.defaults
     local layout = self:_layout(defaults)
-    local theme = self:_theme(defaults)
+    local force_dark = style_id == "custom"
+        and G_reader_settings:readSetting(self.constants.BG_SETTING) == "black"
+    local theme = self:_theme(defaults, force_dark)
     -- User-adjustable size deltas apply to the style's three base tiers, so
     -- every text element in every style scales together while keeping each
     -- style's internal size relationships intact.
     local function tier(base, delta_key, floor)
-        local delta = tonumber(G_reader_settings:readSetting(self.constants[delta_key])) or 0
+        local delta = style_id == "custom" and 0
+            or tonumber(G_reader_settings:readSetting(self.constants[delta_key])) or 0
         return layout.scaled(math.max(floor, base + delta))
     end
     local fonts = {
@@ -358,7 +388,7 @@ function Renderer:build(ui, state, style)
         layout.content_width = layout.width - layout.padding_h * 2
     end
 
-    local ctx = self:_context(data, style, layout, theme, fonts)
+    local ctx = self:_context(data, style, layout, theme, fonts, options)
     local result = self.registry:render(style_id, ctx)
     local frame = result.frame or {}
     local content = result.body
@@ -399,11 +429,15 @@ function Renderer:build(ui, state, style)
     end
 
     local border = 0
-    local border_setting = G_reader_settings:readSetting(self.constants.BORDER) or "none"
-    if border_setting == "thin" then border = layout.scaled(1)
-    elseif border_setting == "thick" then border = layout.scaled(2) end
+    if not frame.no_border then
+        local border_setting = G_reader_settings:readSetting(self.constants.BORDER) or "none"
+        if border_setting == "thin" then border = layout.scaled(1)
+        elseif border_setting == "thick" then border = layout.scaled(2) end
+    end
 
     local radius = frame.radius or 0
+    local frame_background = frame.background
+    if not frame.transparent and frame_background == nil then frame_background = theme.background end
     local final = FrameContainer:new{
         radius = radius,
         bordersize = border,
@@ -411,7 +445,7 @@ function Renderer:build(ui, state, style)
         padding_right = padding_right,
         padding_bottom = padding_bottom,
         padding_left = padding_left,
-        background = frame.background or theme.background,
+        background = frame_background,
         content,
     }
 

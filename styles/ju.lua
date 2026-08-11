@@ -128,12 +128,16 @@ function Style.render(ctx)
     if d.battery_text ~= "" then
         table.insert(status_parts, tr("POWER") .. " " .. d.battery_text)
     end
-    local status = centered(inner_width, TextWidget:new{
+    local clock_widget = TextWidget:new{
         text = table.concat(status_parts, "    "),
         face = Font:getFace("cfont", f.small),
         fgcolor = t.muted,
         padding = 0,
-    })
+    }
+    if ctx.runtime and d.clock ~= "" then
+        ctx.runtime.clock_widget = clock_widget
+    end
+    local status = centered(inner_width, clock_widget)
 
     local poem = centered(inner_width, TextWidget:new{
         text = tr("Picking chrysanthemums by the eastern hedge, the southern hills come into view."),

@@ -129,12 +129,16 @@ function Style.render(ctx)
     end
     if d.clock ~= "" then table.insert(bottom_parts, d.clock) end
     if d.battery_text ~= "" then table.insert(bottom_parts, d.battery_text) end
-    local bottom = centered(inner_width, TextWidget:new{
+    local clock_widget = TextWidget:new{
         text = table.concat(bottom_parts, " · "),
         face = Font:getFace("cfont", f.small),
         fgcolor = t.muted,
         padding = 0,
-    })
+    }
+    if ctx.runtime and d.clock ~= "" then
+        ctx.runtime.clock_widget = clock_widget
+    end
+    local bottom = centered(inner_width, clock_widget)
 
     local rule = ctx.progress(inner_width, s(1), 1, { background = t.faint, fill = t.faint })
 

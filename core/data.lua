@@ -194,19 +194,21 @@ function Data:collect(ui, state)
         mode = math.random(2) == 1 and K.CONTENT_MODE_READING_FOLIO or K.CONTENT_MODE_HIGHLIGHT_PROGRESS
     end
 
-    local message
-    if Device.screen_saver_mode and show.custom_message and settings:isTrue("screensaver_show_message") then
-        message = util.trim(settings:readSetting("screensaver_message") or "")
-        if message ~= "" and ui.bookinfo and ui.bookinfo.expandString then
-            message = util.trim(ui.bookinfo:expandString(message) or message)
-        end
-        if message == "" then message = nil end
+    local expanded_message = util.trim(settings:readSetting("screensaver_message") or "")
+    if expanded_message ~= "" and ui.bookinfo and ui.bookinfo.expandString then
+        expanded_message = util.trim(ui.bookinfo:expandString(expanded_message) or expanded_message)
     end
+    if expanded_message == "" then expanded_message = nil end
 
-    local highlight = show.highlights and randomHighlight(ui) or nil
+    local raw_highlight = randomHighlight(ui)
+    local highlight = show.highlights and raw_highlight or nil
     local percentage = math.floor(math.max(0, math.min(page_number / math.max(page_total, 1), 1)) * 100 + 0.5)
     local now = datetime.secondsToHour(os.time(), settings:isTrue("twelve_hour_clock")) or os.date("%H:%M")
     local battery_text = batteryText()
+    local chapter_time_text = durationText(chapter_time_left_seconds, tr)
+    local book_time_text = durationText(book_time_left_seconds, tr)
+    local total_time_text = string.format(tr("Total time spent: %s"), durationText(total_duration, tr))
+    local today_time_text = string.format(tr("Time spent today (%s): %s"), localizedDayName(os.time(), tr), durationText(today_duration, tr))
 
     return {
         ui = ui,
@@ -220,14 +222,14 @@ function Data:collect(ui, state)
         percentage = percentage,
         chapter_done = chapter_done,
         chapter_total = chapter_total,
-        chapter_time_left = show.chapter_time_left and durationText(chapter_time_left_seconds, tr) or nil,
-        book_time_left = show.book_time_left and durationText(book_time_left_seconds, tr) or nil,
+        chapter_time_left = show.chapter_time_left and chapter_time_text or nil,
+        book_time_left = show.book_time_left and book_time_text or nil,
         chapter_time_left_seconds = chapter_time_left_seconds,
         book_time_left_seconds = book_time_left_seconds,
         total_duration = total_duration,
         today_duration = today_duration,
-        total_time_text = show.total_time and string.format(tr("Total time spent: %s"), durationText(total_duration, tr)) or nil,
-        today_time_text = show.today_time and string.format(tr("Time spent today (%s): %s"), localizedDayName(os.time(), tr), durationText(today_duration, tr)) or nil,
+        total_time_text = show.total_time and total_time_text or nil,
+        today_time_text = show.today_time and today_time_text or nil,
         battery = show.battery and battery_text or "",
         -- Unconditional reading for styles whose layout always renders a
         -- power slot (architecture/bookpost/dossier); the display toggle
@@ -235,9 +237,26 @@ function Data:collect(ui, state)
         battery_text = battery_text,
         clock = show.clock and now or "",
         highlight = highlight,
-        message = message,
+        message = Device.screen_saver_mode and show.custom_message
+            and settings:isTrue("screensaver_show_message") and expanded_message or nil,
         content_mode = mode,
         show = show,
+        custom = {
+            title = title,
+            author = author,
+            chapter = chapter,
+            page_number = string.format("%s / %s", page_label, total_label),
+            percentage = percentage,
+            percentage_text = string.format("%d%%", percentage),
+            chapter_time_left = chapter_time_text,
+            book_time_left = book_time_text,
+            total_time = total_time_text,
+            today_time = today_time_text,
+            battery = battery_text,
+            clock = now,
+            highlight = raw_highlight,
+            custom_message = expanded_message,
+        },
     }
 end
 

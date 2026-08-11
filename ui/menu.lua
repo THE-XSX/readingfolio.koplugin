@@ -1,3 +1,4 @@
+local ConfirmBox = require("ui/widget/confirmbox")
 local InputDialog = require("ui/widget/inputdialog")
 local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
@@ -54,24 +55,29 @@ end
 
 function Menu:_styleItems()
     local items = {}
+    local tr = self.translate
     for _, style in ipairs(self.registry:list()) do
         local style_id, style_label = style.id, style.label
         table.insert(items, {
-            text = self.translate(style_label),
+            text = tr(style_label),
             checked_func = function()
                 local raw = G_reader_settings:readSetting(self.constants.STYLE_SETTING)
                 return raw == style_id or (not raw and style_id == self.constants.DEFAULT_STYLE)
             end,
             callback = function()
                 save(self.constants.STYLE_SETTING, style_id)
-                self:_preview()
+                if style_id == "custom" and self._plugin then
+                    self._plugin:showCustomEditor()
+                else
+                    self:_preview()
+                end
             end,
             radio = true,
             keep_menu_open = true,
         })
     end
     table.insert(items, {
-        text = self.translate("Random style"),
+        text = tr("Random style"),
         checked_func = function()
             return G_reader_settings:readSetting(self.constants.STYLE_SETTING) == "random"
         end,
@@ -81,7 +87,131 @@ function Menu:_styleItems()
         end,
         radio = true,
         keep_menu_open = true,
+        separator = true,
     })
+
+    if self._plugin then
+        local custom_presets = self._plugin:getCustomPresets()
+        local preset_names = {}
+        for name in pairs(custom_presets) do
+            table.insert(preset_names, name)
+        end
+        table.sort(preset_names)
+
+        table.insert(items, {
+            text = tr("Save current layout as preset…"),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                local dialog
+                dialog = InputDialog:new{
+                    title = tr("Save custom layout as preset"),
+                    input = "",
+                    buttons = {{{
+                        text = tr("Cancel"),
+                        callback = function() UIManager:close(dialog) end,
+                    }, {
+                        text = tr("Save"),
+                        is_enter_default = true,
+                        callback = function()
+                            local name = dialog:getInputText()
+                            if not name or name == "" then
+                                UIManager:close(dialog)
+                                return
+                            end
+                            if self._plugin:saveCustomPreset(name) then
+                                UIManager:close(dialog)
+                                UIManager:show(Notification:new{ text = string.format(tr("Saved preset: %s"), name) })
+                                if touchmenu_instance then touchmenu_instance:updateItems() end
+                            else
+                                UIManager:show(Notification:new{ text = tr("Preset name already in use or invalid.") })
+                            end
+                        end,
+                    }}},
+                }
+                UIManager:show(dialog)
+                dialog:onShowKeyboard()
+            end,
+        })
+
+        for _, name in ipairs(preset_names) do
+            table.insert(items, {
+                text = name,
+                sub_item_table = {
+                    {
+                        text = tr("Apply this preset"),
+                        keep_menu_open = true,
+                        callback = function()
+                            self._plugin:applyCustomPreset(name)
+                        end,
+                    },
+                    {
+                        text = tr("Overwrite with current"),
+                        keep_menu_open = true,
+                        callback = function()
+                            self._plugin:saveCustomPreset(name)
+                            UIManager:show(Notification:new{ text = string.format(tr("Updated preset: %s"), name) })
+                        end,
+                    },
+                    {
+                        text = tr("Rename…"),
+                        keep_menu_open = true,
+                        callback = function(touchmenu_instance)
+                            local dialog
+                            dialog = InputDialog:new{
+                                title = tr("Rename preset"),
+                                input = name,
+                                buttons = {{{
+                                    text = tr("Cancel"),
+                                    callback = function() UIManager:close(dialog) end,
+                                }, {
+                                    text = tr("Save"),
+                                    is_enter_default = true,
+                                    callback = function()
+                                        local new_name = dialog:getInputText()
+                                        if not new_name or new_name == "" or new_name == name then
+                                            UIManager:close(dialog)
+                                            return
+                                        end
+                                        if self._plugin:renameCustomPreset(name, new_name) then
+                                            UIManager:close(dialog)
+                                            if touchmenu_instance then
+                                                if touchmenu_instance.onSubMenuClose then touchmenu_instance:onSubMenuClose() end
+                                                touchmenu_instance:updateItems()
+                                            end
+                                        else
+                                            UIManager:show(Notification:new{ text = tr("Name already in use") })
+                                        end
+                                    end,
+                                }}},
+                            }
+                            UIManager:show(dialog)
+                            dialog:onShowKeyboard()
+                        end,
+                    },
+                    {
+                        text = tr("Delete"),
+                        keep_menu_open = true,
+                        callback = function(touchmenu_instance)
+                            UIManager:show(ConfirmBox:new{
+                                text = string.format(tr("Are you sure you want to delete preset \"%s\"?"), name),
+                                ok_text = tr("Delete"),
+                                cancel_text = tr("Cancel"),
+                                ok_callback = function()
+                                    self._plugin:deleteCustomPreset(name)
+                                    UIManager:show(Notification:new{ text = string.format(tr("Deleted preset: %s"), name) })
+                                    if touchmenu_instance then
+                                        if touchmenu_instance.onSubMenuClose then touchmenu_instance:onSubMenuClose() end
+                                        touchmenu_instance:updateItems()
+                                    end
+                                end,
+                            })
+                        end,
+                    },
+                },
+            })
+        end
+    end
+
     return items
 end
 
@@ -300,29 +430,24 @@ function Menu:items(plugin)
     local K, tr = self.constants, self.translate
     self._plugin = plugin
     return {
+        -- 1. Preview & Quick Edit
         {
             text = tr("Preview Reading Folio"),
             callback = function() plugin:showReceipt() end,
             keep_menu_open = true,
         },
         {
-            text = tr("Use as sleep screen"),
-            checked_func = function() return G_reader_settings:readSetting("screensaver_type") == "reading_folio" end,
-            callback = function()
-                local enabled = G_reader_settings:readSetting("screensaver_type") == "reading_folio"
-                if enabled then
-                    save("screensaver_type", G_reader_settings:readSetting(K.PREVIOUS_SCREENSAVER_TYPE) or "cover")
-                else
-                    local previous = G_reader_settings:readSetting("screensaver_type") or "cover"
-                    save(K.PREVIOUS_SCREENSAVER_TYPE, previous)
-                    save("screensaver_type", "reading_folio")
-                end
-                self:_preview()
-            end,
+            text = tr("Edit custom layout"),
+            callback = function() plugin:showCustomEditor() end,
             keep_menu_open = true,
+            separator = true,
         },
-        { text = tr("Language"), sub_item_table = self:_languageItems() },
+
+        -- 2. Style & Scenes
         { text = tr("Style"), sub_item_table = self:_styleItems() },
+        self:_toggle("Follow Type Folio scenes", K.FOLLOW_FOLIO_SCENES),
+
+        -- 3. Content & Display Items
         {
             text = tr("Content"),
             sub_item_table = {
@@ -331,7 +456,29 @@ function Menu:items(plugin)
                 self:_radio("Random", K.CONTENT_MODE_SETTING, K.CONTENT_MODE_RANDOM),
             },
         },
-        { text = tr("Card width mode"), sub_item_table = self:_ratioItems() },
+        {
+            text = tr("Display items"),
+            sub_item_table = {
+                self:_toggle("Book title", K.SHOW_TITLE),
+                self:_toggle("Author", K.SHOW_AUTHOR),
+                self:_toggle("Cover", K.SHOW_COVER),
+                self:_toggle("Current chapter", K.SHOW_CHAPTER),
+                self:_toggle("Page count", K.SHOW_PAGE_NUMBER),
+                self:_toggle("Reading percentage", K.SHOW_PERCENTAGE),
+                self:_toggle("Progress bar", K.SHOW_PROGRESS_BAR),
+                self:_toggle("Chapter time left", K.SHOW_CHAPTER_TIME_LEFT),
+                self:_toggle("Book time left", K.SHOW_BOOK_TIME_LEFT),
+                self:_toggle("Total time spent", K.SHOW_TOTAL_TIME),
+                self:_toggle("Time spent today", K.SHOW_TODAY_TIME),
+                self:_toggle("Battery level", K.SHOW_BATTERY),
+                self:_toggle("Current time", K.SHOW_CLOCK),
+                self:_toggle("Highlights & annotations", K.SHOW_HIGHLIGHTS),
+                self:_toggle("Custom screensaver message", K.SHOW_CUSTOM_MESSAGE),
+            },
+            separator = true,
+        },
+
+        -- 4. Appearance & Background
         {
             text = tr("Appearance"),
             sub_item_table = {
@@ -372,6 +519,7 @@ function Menu:items(plugin)
                         { text = tr("Small text"), sub_item_table = self:_fontDeltaItems(K.FONT_DELTA_SMALL) },
                     },
                 },
+                { text = tr("Card width mode"), sub_item_table = self:_ratioItems() },
             },
         },
         {
@@ -379,9 +527,19 @@ function Menu:items(plugin)
             sub_item_table = {
                 self:_radio("White fill", K.BG_SETTING, "white", "white"),
                 self:_radio("Transparent", K.BG_SETTING, "transparent"),
+                self:_radio("Gray fill", K.BG_SETTING, "gray"),
                 self:_radio("Black fill", K.BG_SETTING, "black"),
                 self:_radio("Random image", K.BG_SETTING, "random_image"),
                 self:_radio("Book cover", K.BG_SETTING, "book_cover"),
+                {
+                    text = tr("Image opacity"),
+                    sub_item_table = {
+                        self:_radio("100% (opaque, default)", K.BG_IMAGE_OPACITY_SETTING, 1, 1),
+                        self:_radio("75% (slightly transparent)", K.BG_IMAGE_OPACITY_SETTING, 0.75),
+                        self:_radio("50% (semi-transparent)", K.BG_IMAGE_OPACITY_SETTING, 0.50),
+                        self:_radio("25% (highly transparent)", K.BG_IMAGE_OPACITY_SETTING, 0.25),
+                    },
+                },
                 {
                     text = tr("Background image placement"),
                     sub_item_table = {
@@ -391,27 +549,50 @@ function Menu:items(plugin)
                     },
                 },
             },
+            separator = true,
+        },
+
+        -- 5. Screensaver & System Settings
+        {
+            text = tr("Use as sleep screen"),
+            checked_func = function() return G_reader_settings:readSetting("screensaver_type") == "reading_folio" end,
+            callback = function()
+                local enabled = G_reader_settings:readSetting("screensaver_type") == "reading_folio"
+                if enabled then
+                    save("screensaver_type", G_reader_settings:readSetting(K.PREVIOUS_SCREENSAVER_TYPE) or "cover")
+                else
+                    local previous = G_reader_settings:readSetting("screensaver_type") or "cover"
+                    save(K.PREVIOUS_SCREENSAVER_TYPE, previous)
+                    save("screensaver_type", "reading_folio")
+                end
+                self:_preview()
+            end,
+            keep_menu_open = true,
         },
         {
-            text = tr("Display items"),
+            text = tr("Custom layout clock refresh"),
             sub_item_table = {
-                self:_toggle("Book title", K.SHOW_TITLE),
-                self:_toggle("Author", K.SHOW_AUTHOR),
-                self:_toggle("Cover", K.SHOW_COVER),
-                self:_toggle("Current chapter", K.SHOW_CHAPTER),
-                self:_toggle("Page count", K.SHOW_PAGE_NUMBER),
-                self:_toggle("Reading percentage", K.SHOW_PERCENTAGE),
-                self:_toggle("Progress bar", K.SHOW_PROGRESS_BAR),
-                self:_toggle("Chapter time left", K.SHOW_CHAPTER_TIME_LEFT),
-                self:_toggle("Book time left", K.SHOW_BOOK_TIME_LEFT),
-                self:_toggle("Total time spent", K.SHOW_TOTAL_TIME),
-                self:_toggle("Time spent today", K.SHOW_TODAY_TIME),
-                self:_toggle("Battery level", K.SHOW_BATTERY),
-                self:_toggle("Current time", K.SHOW_CLOCK),
-                self:_toggle("Highlights & annotations", K.SHOW_HIGHLIGHTS),
-                self:_toggle("Custom screensaver message", K.SHOW_CUSTOM_MESSAGE),
+                self:_radio("Static (default)", K.CLOCK_REFRESH_MODE, "static", "static"),
+                self:_radio("Every minute (local refresh)", K.CLOCK_REFRESH_MODE, "minute"),
+                {
+                    text = tr("Local refresh waveform"),
+                    sub_item_table = {
+                        self:_radio("UI refresh (default)", K.CLOCK_REFRESH_WAVEFORM, "ui", "ui"),
+                        self:_radio("Fast refresh", K.CLOCK_REFRESH_WAVEFORM, "fast"),
+                    },
+                },
+                {
+                    text = tr("Periodic full refresh"),
+                    sub_item_table = {
+                        self:_radio("Off", K.CLOCK_FULL_REFRESH_INTERVAL, 0),
+                        self:_radio("Every 10 minutes", K.CLOCK_FULL_REFRESH_INTERVAL, 10),
+                        self:_radio("Every 30 minutes (default)", K.CLOCK_FULL_REFRESH_INTERVAL, 30, 30),
+                        self:_radio("Every 60 minutes", K.CLOCK_FULL_REFRESH_INTERVAL, 60),
+                    },
+                },
             },
         },
+        { text = tr("Language"), sub_item_table = self:_languageItems() },
     }
 end
 

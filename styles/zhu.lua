@@ -192,6 +192,9 @@ function Style.render(ctx)
         fgcolor = t.muted,
         padding = 0,
     }
+    if ctx.runtime and d.clock ~= "" then
+        ctx.runtime.clock_widget = status_widget
+    end
     local bottom_row = HorizontalGroup:new{
         align = "bottom",
         percent_widget,

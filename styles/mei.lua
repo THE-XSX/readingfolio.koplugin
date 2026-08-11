@@ -234,6 +234,9 @@ function Style.render(ctx)
         fgcolor = t.muted,
         padding = 0,
     }
+    if ctx.runtime and d.clock ~= "" then
+        ctx.runtime.clock_widget = bottom_right
+    end
     local bottom_row = HorizontalGroup:new{
         bottom_left,
         HorizontalSpan:new{

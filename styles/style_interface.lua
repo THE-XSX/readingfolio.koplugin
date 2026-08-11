@@ -14,16 +14,17 @@
 --   translate(text) locale-aware translation for fixed style text
 --   cover     the default cover widget when allow_cover is enabled
 --   scaled(n) device-aware integer scaling
---   spacer(n), progress(...), center(...), coverFor(w, h), appendHighlights(...)
+--   spacer(n), progress(...), center(...), coverFor(w, h), customCover(w, h), appendHighlights(...)
+--   custom_layout, editor_selected and runtime for the built-in custom layout editor
 --
 -- result must contain:
 --   body: a KOReader widget
 -- Optional result fields:
 --   common_footer: append message/battery/clock (default true)
---   frame: padding, radius, background and full_bleed overrides
+--   frame: padding, radius, background, full_bleed, transparent and no_border overrides
 --   shadow: whether the global shadow setting applies (default true)
--- A style may set defaults.landscape, defaults.aspect_ratio and
--- defaults.default_ratio to request a landscape-oriented card canvas.
+-- A style may set defaults.landscape, defaults.use_screen_orientation,
+-- defaults.aspect_ratio and defaults.default_ratio to control its canvas.
 
 local Interface = {
     VERSION = 1,
@@ -55,6 +56,10 @@ function Interface.validate(style, source)
     if style.defaults then
         if style.defaults.landscape ~= nil and type(style.defaults.landscape) ~= "boolean" then
             fail(source, "defaults.landscape must be a boolean")
+        end
+        if style.defaults.use_screen_orientation ~= nil
+                and type(style.defaults.use_screen_orientation) ~= "boolean" then
+            fail(source, "defaults.use_screen_orientation must be a boolean")
         end
         if style.defaults.aspect_ratio ~= nil
                 and (type(style.defaults.aspect_ratio) ~= "number" or style.defaults.aspect_ratio <= 0) then

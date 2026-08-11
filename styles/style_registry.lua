@@ -17,10 +17,11 @@ local STYLE_FILES = {
     "lan",
     "zhu",
     "ju",
+    "custom",
 }
 
 function Registry.new(plugin_root)
-    local interface = dofile(plugin_root .. "style_interface.lua")
+    local interface = dofile(plugin_root .. "styles/style_interface.lua")
     local self = setmetatable({
         interface = interface,
         ordered = {},

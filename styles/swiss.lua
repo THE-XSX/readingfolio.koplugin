@@ -138,6 +138,9 @@ function Style.render(ctx)
         fgcolor = t.muted,
         padding = 0,
     }
+    if ctx.runtime and d.clock ~= "" then
+        ctx.runtime.clock_widget = clock
+    end
     table.insert(children, HorizontalGroup:new{
         today,
         HorizontalSpan:new{ width = math.max(0, width - today:getSize().w - clock:getSize().w) },

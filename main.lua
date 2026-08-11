@@ -1,18 +1,22 @@
 local item_path = debug.getinfo(1, "S").source:sub(2)
 local PLUGIN_ROOT = item_path:match("(.*[/\\])") or "plugins/readingfolio.koplugin/"
 
-local Background = dofile(PLUGIN_ROOT .. "background.lua")
-local Constants = dofile(PLUGIN_ROOT .. "constants.lua")
-local Data = dofile(PLUGIN_ROOT .. "data.lua")
-local Menu = dofile(PLUGIN_ROOT .. "menu.lua")
-local Renderer = dofile(PLUGIN_ROOT .. "renderer.lua")
-local Registry = dofile(PLUGIN_ROOT .. "style_registry.lua")
-local I18n = dofile(PLUGIN_ROOT .. "i18n.lua")
+local Background = dofile(PLUGIN_ROOT .. "rendering/background.lua")
+local Constants = dofile(PLUGIN_ROOT .. "core/constants.lua")
+local CustomLayout = dofile(PLUGIN_ROOT .. "rendering/custom_layout.lua")
+local Data = dofile(PLUGIN_ROOT .. "core/data.lua")
+local Editor = dofile(PLUGIN_ROOT .. "ui/editor.lua")
+local FolioScene = dofile(PLUGIN_ROOT .. "core/folio_scene.lua")
+local Menu = dofile(PLUGIN_ROOT .. "ui/menu.lua")
+local Renderer = dofile(PLUGIN_ROOT .. "rendering/renderer.lua")
+local Registry = dofile(PLUGIN_ROOT .. "styles/style_registry.lua")
+local I18n = dofile(PLUGIN_ROOT .. "i18n/i18n.lua")
 local menu_translate = I18n.new(PLUGIN_ROOT)
 local display_translate = I18n.new(PLUGIN_ROOT, { language_setting = Constants.LANGUAGE_SETTING })
 
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
+local datetime = require("datetime")
 local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
 local ffiUtil = require("ffi/util")
@@ -40,7 +44,13 @@ local QuickLook = InputContainer:extend{
 
 function QuickLook:init()
     self.dimen = Screen:getSize()
-    local receipt, style = self.plugin.renderer:build(self.ui, self.state)
+    self.runtime = {}
+    local scene = self.plugin:_folioScene(self.ui)
+    local selected_style = scene and self.plugin.registry:get(scene.style_id) or nil
+    local receipt, style = self.plugin.renderer:build(self.ui, self.state, selected_style, {
+        runtime = self.runtime,
+        scene = scene,
+    })
     if receipt then
         self[1] = self.plugin.background:compose(self.ui, receipt, style.defaults.dark)
     else
@@ -60,9 +70,63 @@ function QuickLook:init()
         self.ges_events.Swipe = { fullScreenGesture("swipe") }
         self.ges_events.MultiSwipe = { fullScreenGesture("multiswipe") }
     end
+    self:_setupClockRefresh()
+end
+
+function QuickLook:_setupClockRefresh()
+    if self.clock_refresh_action then return end
+    local mode = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_MODE) or "minute"
+    if mode == "static" then return end
+    if not self.runtime.clock_widget then return end
+    self.clock_refresh_action = function()
+        if not self.plugin or self.plugin.quick_look_widget ~= self then return end
+        local clock = self.runtime.clock_widget
+        if not clock then return end
+        local text = datetime.secondsToHour(os.time(), G_reader_settings:isTrue("twelve_hour_clock"))
+            or os.date("%H:%M")
+        if clock.setText then
+            clock:setText(text)
+        elseif clock._inner and clock._inner.setText then
+            clock._inner:setText(text)
+        else
+            clock.text = text
+        end
+        self.clock_refresh_count = (self.clock_refresh_count or 0) + 1
+        local full_refresh_interval = tonumber(G_reader_settings:readSetting(
+            Constants.CLOCK_FULL_REFRESH_INTERVAL
+        )) or 30
+        if full_refresh_interval > 0 and self.clock_refresh_count >= full_refresh_interval then
+            self.clock_refresh_count = 0
+            UIManager:setDirty(self, "full")
+        else
+            local waveform = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_WAVEFORM)
+            waveform = waveform == "fast" and "fast" or "ui"
+            if clock.dimen then
+                UIManager:widgetRepaint(clock, clock.dimen.x, clock.dimen.y)
+                UIManager:setDirty(nil, waveform, clock.dimen:copy())
+            else
+                UIManager:setDirty(self, waveform)
+            end
+        end
+        self:_scheduleNextClockRefresh()
+    end
+    self:_scheduleNextClockRefresh()
+end
+
+function QuickLook:_scheduleNextClockRefresh()
+    if not self.clock_refresh_action then return end
+    UIManager:scheduleIn(61 - tonumber(os.date("%S")), self.clock_refresh_action)
+end
+
+function QuickLook:_stopClockRefresh()
+    if self.clock_refresh_action then
+        UIManager:unschedule(self.clock_refresh_action)
+        self.clock_refresh_action = nil
+    end
 end
 
 function QuickLook:onClose()
+    self:_stopClockRefresh()
     if self.plugin and self.plugin.quick_look_widget == self then
         self.plugin.quick_look_widget = nil
     end
@@ -73,6 +137,20 @@ end
 QuickLook.onTap = QuickLook.onClose
 QuickLook.onMultiSwipe = QuickLook.onClose
 QuickLook.onAnyKeyPressed = QuickLook.onClose
+
+function QuickLook:onCloseWidget()
+    self:_stopClockRefresh()
+end
+
+function QuickLook:onSuspend()
+    self:_stopClockRefresh()
+end
+
+function QuickLook:onResume()
+    if self.plugin and self.plugin.quick_look_widget == self then
+        self:_setupClockRefresh()
+    end
+end
 
 -- Diagonal swipes forward KOReader's screenshot action (same gesture as in
 -- the reader) so the preview itself can be captured; other swipes close it.
@@ -95,14 +173,17 @@ local ReadingFolio = WidgetContainer:extend{
 
 function ReadingFolio:init()
     self.registry = Registry.new(PLUGIN_ROOT)
+    self.custom_layout = CustomLayout.new(Constants)
     self.data_provider = Data.new(Constants, display_translate)
     self.renderer = Renderer.new{
         constants = Constants,
         data_provider = self.data_provider,
         registry = self.registry,
         translate = display_translate,
+        custom_layout = self.custom_layout,
     }
     self.background = Background.new(Constants)
+    self.folio_scene = FolioScene.new()
     self.menu_builder = Menu.new{
         constants = Constants,
         registry = self.registry,
@@ -112,6 +193,38 @@ function ReadingFolio:init()
     self.ui.menu:registerToMainMenu(self)
     self:_installScreensaverAdapter()
     math.randomseed(os.time())
+end
+
+function ReadingFolio:_folioScene(ui)
+    return self.folio_scene:resolve(ui,
+        G_reader_settings:nilOrTrue(Constants.FOLLOW_FOLIO_SCENES))
+end
+
+function ReadingFolio:showCustomEditor()
+    local ui = self.ui
+    G_reader_settings:saveSetting(Constants.STYLE_SETTING, "custom")
+    G_reader_settings:flush()
+    if ui and ui.menu and ui.menu.onCloseReaderMenu then
+        ui.menu:onCloseReaderMenu()
+    end
+    UIManager:nextTick(function()
+        if not ui or not ui.document then return end
+        if self.quick_look_widget then
+            UIManager:close(self.quick_look_widget)
+            self.quick_look_widget = nil
+        end
+        if self.custom_editor_widget then
+            UIManager:close(self.custom_editor_widget)
+        end
+        self.custom_editor_widget = Editor:new{
+            plugin = self,
+            ui = ui,
+            state = ui.view and ui.view.state,
+            constants = Constants,
+            translate = menu_translate,
+        }
+        UIManager:show(self.custom_editor_widget)
+    end)
 end
 
 function ReadingFolio:onDispatcherRegisterActions()
@@ -142,6 +255,86 @@ function ReadingFolio:showReceipt()
         }
         UIManager:show(self.quick_look_widget)
     end)
+end
+
+function ReadingFolio:getCustomPresets()
+    local presets = G_reader_settings:readSetting(Constants.CUSTOM_PRESETS_SETTING)
+    return type(presets) == "table" and presets or {}
+end
+
+function ReadingFolio:saveCustomPreset(name)
+    if not name or name:match("%S") == nil then return false end
+    local presets = self:getCustomPresets()
+    presets[name] = {
+        name = name,
+        timestamp = os.time(),
+        layout = self.custom_layout:get().items,
+        bg_setting = G_reader_settings:readSetting(Constants.BG_SETTING),
+        custom_bg_path = G_reader_settings:readSetting(Constants.CUSTOM_BG_PATH),
+        bg_image_opacity = G_reader_settings:readSetting(Constants.BG_IMAGE_OPACITY_SETTING),
+        bg_image_mode = G_reader_settings:readSetting(Constants.BG_IMAGE_MODE_SETTING),
+        border = G_reader_settings:readSetting(Constants.BORDER),
+        card_bg = G_reader_settings:readSetting(Constants.CARD_BG),
+        shadow = G_reader_settings:readSetting(Constants.SHADOW),
+        cover_scale = G_reader_settings:readSetting(Constants.COVER_SCALE_SETTING),
+        card_ratio_mode = G_reader_settings:readSetting(Constants.CARD_RATIO_MODE),
+        card_ratio_custom = G_reader_settings:readSetting(Constants.CARD_RATIO_CUSTOM),
+        font_delta_big = G_reader_settings:readSetting(Constants.FONT_DELTA_BIG),
+        font_delta_mid = G_reader_settings:readSetting(Constants.FONT_DELTA_MID),
+        font_delta_small = G_reader_settings:readSetting(Constants.FONT_DELTA_SMALL),
+    }
+    G_reader_settings:saveSetting(Constants.CUSTOM_PRESETS_SETTING, presets)
+    G_reader_settings:flush()
+    return true
+end
+
+function ReadingFolio:applyCustomPreset(name)
+    local presets = self:getCustomPresets()
+    local preset = presets[name]
+    if not preset then return false end
+    if preset.layout then self.custom_layout:set(preset.layout) end
+    local function restore(key, val)
+        if val == nil then G_reader_settings:delSetting(key) else G_reader_settings:saveSetting(key, val) end
+    end
+    restore(Constants.BG_SETTING, preset.bg_setting)
+    restore(Constants.CUSTOM_BG_PATH, preset.custom_bg_path)
+    restore(Constants.BG_IMAGE_OPACITY_SETTING, preset.bg_image_opacity)
+    restore(Constants.BG_IMAGE_MODE_SETTING, preset.bg_image_mode)
+    restore(Constants.BORDER, preset.border)
+    restore(Constants.CARD_BG, preset.card_bg)
+    restore(Constants.SHADOW, preset.shadow)
+    restore(Constants.COVER_SCALE_SETTING, preset.cover_scale)
+    restore(Constants.CARD_RATIO_MODE, preset.card_ratio_mode)
+    restore(Constants.CARD_RATIO_CUSTOM, preset.card_ratio_custom)
+    restore(Constants.FONT_DELTA_BIG, preset.font_delta_big)
+    restore(Constants.FONT_DELTA_MID, preset.font_delta_mid)
+    restore(Constants.FONT_DELTA_SMALL, preset.font_delta_small)
+    G_reader_settings:saveSetting(Constants.STYLE_SETTING, "custom")
+    G_reader_settings:flush()
+    self:showReceipt()
+    return true
+end
+
+function ReadingFolio:deleteCustomPreset(name)
+    local presets = self:getCustomPresets()
+    if not presets[name] then return false end
+    presets[name] = nil
+    G_reader_settings:saveSetting(Constants.CUSTOM_PRESETS_SETTING, presets)
+    G_reader_settings:flush()
+    return true
+end
+
+function ReadingFolio:renameCustomPreset(old_name, new_name)
+    if not new_name or new_name:match("%S") == nil or old_name == new_name then return false end
+    local presets = self:getCustomPresets()
+    if not presets[old_name] or presets[new_name] then return false end
+    local data = presets[old_name]
+    data.name = new_name
+    presets[new_name] = data
+    presets[old_name] = nil
+    G_reader_settings:saveSetting(Constants.CUSTOM_PRESETS_SETTING, presets)
+    G_reader_settings:flush()
+    return true
 end
 
 function ReadingFolio:addToMainMenu(menu_items)
@@ -196,7 +389,6 @@ local function fallbackScreensaver(saver, original_show)
     end
 end
 
-
 function ReadingFolio:_showScreensaver(saver, original_show)
     local ui = saver.ui or ReaderUI.instance
     if not ui or not ui.document then
@@ -214,8 +406,11 @@ function ReadingFolio:_showScreensaver(saver, original_show)
 
     Device.screen_saver_mode = true
     local rotation = Screen:getRotationMode()
-    local selected_style = self.renderer:selectedStyle()
+    local scene = self:_folioScene(ui)
+    local selected_style = scene and self.registry:get(scene.style_id) or self.renderer:selectedStyle()
     local landscape = selected_style and selected_style.defaults.landscape == true
+    local use_screen_orientation = selected_style
+        and selected_style.defaults.use_screen_orientation == true
     local with_gesture_lock = Device:isTouchDevice()
         and G_reader_settings:readSetting("screensaver_delay") == "gesture"
     local orig_dimen = with_gesture_lock and {
@@ -223,7 +418,10 @@ function ReadingFolio:_showScreensaver(saver, original_show)
         h = Screen:getHeight(),
     } or nil
     Device.orig_rotation_mode = rotation
-    if landscape and bit.band(rotation, 1) == 0 then
+    if use_screen_orientation then
+        Device.orig_rotation_mode = nil
+        orig_dimen = nil
+    elseif landscape and bit.band(rotation, 1) == 0 then
         Screen:setRotationMode(Screen.DEVICE_ROTATED_CLOCKWISE or 1)
     elseif not landscape and bit.band(rotation, 1) == 1 then
         Screen:setRotationMode(Screen.DEVICE_ROTATED_UPRIGHT)
@@ -232,8 +430,8 @@ function ReadingFolio:_showScreensaver(saver, original_show)
         orig_dimen = nil
     end
 
-    local bg_setting = G_reader_settings:readSetting(Constants.BG_SETTING) or "white"
-    if Device:hasEinkScreen() and (bg_setting ~= "transparent" or Device.orig_rotation_mode ~= nil) then
+    if Device:hasEinkScreen()
+            and (not self.background:isTranslucent() or Device.orig_rotation_mode ~= nil) then
         Screen:clear()
         Screen:refreshFull(0, 0, Screen:getWidth(), Screen:getHeight())
         if Device:isKobo() and Device:isSunxi() then
@@ -241,7 +439,11 @@ function ReadingFolio:_showScreensaver(saver, original_show)
         end
     end
 
-    local receipt, style = self.renderer:build(ui, ui.view and ui.view.state, selected_style)
+    self.runtime = {}
+    local receipt, style = self.renderer:build(ui, ui.view and ui.view.state, selected_style, {
+        scene = scene,
+        runtime = self.runtime,
+    })
     if not receipt then
         logger.warn("Reading Folio: render failed; using the default screensaver")
         if Device.orig_rotation_mode then
@@ -266,6 +468,60 @@ function ReadingFolio:_showScreensaver(saver, original_show)
         }
         UIManager:show(saver.screensaver_lock_widget)
     end
+    self:_setupScreensaverClockRefresh(saver, self.runtime)
+end
+
+function ReadingFolio:_setupScreensaverClockRefresh(saver, runtime)
+    if not saver or not runtime or not runtime.clock_widget then return end
+    local mode = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_MODE) or "minute"
+    if mode == "static" then return end
+
+    if saver._reading_folio_clock_timer then
+        UIManager:unschedule(saver._reading_folio_clock_timer)
+        saver._reading_folio_clock_timer = nil
+    end
+
+    local clock = runtime.clock_widget
+    local count = 0
+
+    local function refreshClock()
+        if not saver.screensaver_widget or not clock then return end
+        local now_str = datetime.secondsToHour(os.time(), G_reader_settings:isTrue("twelve_hour_clock"))
+            or os.date("%H:%M")
+
+        if clock.setText then
+            clock:setText(now_str)
+        elseif clock._inner and clock._inner.setText then
+            clock._inner:setText(now_str)
+        else
+            clock.text = now_str
+        end
+
+        count = count + 1
+        local full_refresh_interval = tonumber(G_reader_settings:readSetting(
+            Constants.CLOCK_FULL_REFRESH_INTERVAL
+        )) or 30
+
+        if full_refresh_interval > 0 and count >= full_refresh_interval then
+            count = 0
+            UIManager:setDirty(saver.screensaver_widget, "full")
+        else
+            local waveform = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_WAVEFORM)
+            waveform = waveform == "fast" and "fast" or "ui"
+            if clock.dimen then
+                UIManager:widgetRepaint(clock, clock.dimen.x, clock.dimen.y)
+                UIManager:setDirty(nil, waveform, clock.dimen:copy())
+            else
+                UIManager:setDirty(saver.screensaver_widget, waveform)
+            end
+        end
+
+        local delay = 61 - tonumber(os.date("%S"))
+        saver._reading_folio_clock_timer = UIManager:scheduleIn(delay, refreshClock)
+    end
+
+    local delay = 61 - tonumber(os.date("%S"))
+    saver._reading_folio_clock_timer = UIManager:scheduleIn(delay, refreshClock)
 end
 
 function ReadingFolio:_installScreensaverAdapter()
@@ -277,6 +533,17 @@ function ReadingFolio:_installScreensaverAdapter()
                 return Screensaver._reading_folio_original_show(saver)
             end
             return plugin:_showScreensaver(saver, Screensaver._reading_folio_original_show)
+        end
+        local orig_close = Screensaver.close or Screensaver.hide
+        if orig_close then
+            Screensaver._reading_folio_original_close = orig_close
+            Screensaver.close = function(saver)
+                if saver and saver._reading_folio_clock_timer then
+                    UIManager:unschedule(saver._reading_folio_clock_timer)
+                    saver._reading_folio_clock_timer = nil
+                end
+                return Screensaver._reading_folio_original_close(saver)
+            end
         end
     end
     Screensaver._reading_folio_plugin = self
