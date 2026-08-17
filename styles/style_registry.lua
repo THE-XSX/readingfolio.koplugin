@@ -49,6 +49,29 @@ function Registry:get(id)
     return self.by_id[id]
 end
 
+-- "random" is a pseudo-id used by the style setting and by TypeFolio folio scenes; no
+-- style file answers to it, so it has to be drawn from the real styles. "custom" is
+-- excluded because it renders the user's own saved layout, which is not a surprise.
+function Registry:randomStyle()
+    local candidates = {}
+    for _, style in ipairs(self.ordered) do
+        if style.id ~= "custom" then
+            table.insert(candidates, style)
+        end
+    end
+    if #candidates == 0 then return nil end
+    return candidates[math.random(#candidates)]
+end
+
+-- Use this instead of get() wherever the id may have come from a setting or a scene
+-- snapshot, so the "random" pseudo-id resolves to a concrete style instead of nil.
+function Registry:resolve(id)
+    if id == "random" then
+        return self:randomStyle()
+    end
+    return self:get(id)
+end
+
 function Registry:normalize(id, constants)
     if id == "random" then return "random" end
     if id and self.by_id[id] then

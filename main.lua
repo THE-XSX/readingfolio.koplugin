@@ -10,6 +10,7 @@ local FolioScene = dofile(PLUGIN_ROOT .. "core/folio_scene.lua")
 local Menu = dofile(PLUGIN_ROOT .. "ui/menu.lua")
 local Renderer = dofile(PLUGIN_ROOT .. "rendering/renderer.lua")
 local Registry = dofile(PLUGIN_ROOT .. "styles/style_registry.lua")
+local ThemeBundle = dofile(PLUGIN_ROOT .. "core/theme_bundle.lua")
 local I18n = dofile(PLUGIN_ROOT .. "i18n/i18n.lua")
 local menu_translate = I18n.new(PLUGIN_ROOT)
 local display_translate = I18n.new(PLUGIN_ROOT, { language_setting = Constants.LANGUAGE_SETTING })
@@ -32,9 +33,73 @@ local ScreenSaverWidget = require("ui/widget/screensaverwidget")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
-local bit = require("bit")
 
 local Screen = Device.screen
+
+local function currentClockText()
+    return datetime.secondsToHour(os.time(), G_reader_settings:isTrue("twelve_hour_clock"))
+        or os.date("%H:%M")
+end
+
+-- Writes the new time into the widget the style registered. Several styles put the time
+-- in a widget they share with the battery reading or the page count, and those register
+-- a formatter that rebuilds the whole line -- calling setText with just the time there
+-- used to delete everything else on the row at the first refresh.
+local function applyClockText(runtime)
+    local clock = runtime and runtime.clock_widget
+    if not clock then return false end
+    local text = currentClockText()
+    if runtime.clock_format then
+        local ok, rebuilt = pcall(runtime.clock_format, text)
+        if ok and type(rebuilt) == "string" then text = rebuilt end
+    end
+    if clock.setText then
+        clock:setText(text)
+    elseif clock._inner and clock._inner.setText then
+        clock._inner:setText(text)
+    else
+        clock.text = text
+    end
+    return true
+end
+
+-- Repaints just the row the clock sits in. The region is the frame the renderer wraps
+-- that row in: a bare TextWidget never records where it was painted, so this branch was
+-- unreachable for every built-in style before and "local refresh" always redrew the
+-- whole card -- once a minute, on an e-ink screen.
+local function refreshClockRegion(runtime, fallback_widget)
+    local waveform = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_WAVEFORM)
+    waveform = waveform == "fast" and "fast" or "ui"
+    local region = runtime and runtime.clock_region
+    if region and region.dimen then
+        UIManager:widgetRepaint(region, region.dimen.x, region.dimen.y)
+        local area = region.dimen:copy()
+        -- dimen only covers what the row measures right now; the frame reserves a fixed
+        -- width so a time that got narrower cannot strand its old digits outside it.
+        area.w = math.max(area.w, region.width or 0)
+        UIManager:setDirty(nil, waveform, area)
+        return
+    end
+    -- The custom layout registers no region on purpose. Its clock paints itself as a
+    -- transparent mask blitted straight over whatever is beneath -- often a wallpaper
+    -- image -- so repainting that widget alone leaves the previous minute's glyphs
+    -- showing through, and a solid background frame would erase the wallpaper instead.
+    -- Hand the whole card to setDirty and let it paint in full: the region argument only
+    -- limits what gets pushed to the panel, so the refresh still costs one small
+    -- rectangle rather than a full screen.
+    local clock = runtime and runtime.clock_widget
+    local dimen = clock and clock.dimen
+    if dimen then
+        UIManager:setDirty(fallback_widget, waveform,
+            dimen.copy and dimen:copy() or dimen)
+    else
+        UIManager:setDirty(fallback_widget, waveform)
+    end
+end
+
+local function clockFullRefreshInterval()
+    return tonumber(G_reader_settings:readSetting(Constants.CLOCK_FULL_REFRESH_INTERVAL)) or 30
+end
 
 local QuickLook = InputContainer:extend{
     modal = true,
@@ -46,7 +111,13 @@ function QuickLook:init()
     self.dimen = Screen:getSize()
     self.runtime = {}
     local scene = self.plugin:_folioScene(self.ui)
-    local selected_style = scene and self.plugin.registry:get(scene.style_id) or nil
+    local selected_style = self.custom_style
+    if type(selected_style) == "string" then
+        selected_style = self.plugin.registry:resolve(selected_style)
+    end
+    if not selected_style and scene and scene.style_id then
+        selected_style = self.plugin.registry:resolve(scene.style_id)
+    end
     local receipt, style = self.plugin.renderer:build(self.ui, self.state, selected_style, {
         runtime = self.runtime,
         scene = scene,
@@ -75,38 +146,23 @@ end
 
 function QuickLook:_setupClockRefresh()
     if self.clock_refresh_action then return end
-    local mode = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_MODE) or "minute"
+    -- Static unless the reader asked otherwise. The menu already marks "Static" as the
+    -- default and shows it checked while this key is unset, so defaulting to "minute" here
+    -- meant a partial refresh every minute -- plus a full flash on the periodic counter --
+    -- for someone who never opened the submenu.
+    local mode = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_MODE) or "static"
     if mode == "static" then return end
     if not self.runtime.clock_widget then return end
     self.clock_refresh_action = function()
         if not self.plugin or self.plugin.quick_look_widget ~= self then return end
-        local clock = self.runtime.clock_widget
-        if not clock then return end
-        local text = datetime.secondsToHour(os.time(), G_reader_settings:isTrue("twelve_hour_clock"))
-            or os.date("%H:%M")
-        if clock.setText then
-            clock:setText(text)
-        elseif clock._inner and clock._inner.setText then
-            clock._inner:setText(text)
-        else
-            clock.text = text
-        end
+        if not applyClockText(self.runtime) then return end
         self.clock_refresh_count = (self.clock_refresh_count or 0) + 1
-        local full_refresh_interval = tonumber(G_reader_settings:readSetting(
-            Constants.CLOCK_FULL_REFRESH_INTERVAL
-        )) or 30
+        local full_refresh_interval = clockFullRefreshInterval()
         if full_refresh_interval > 0 and self.clock_refresh_count >= full_refresh_interval then
             self.clock_refresh_count = 0
             UIManager:setDirty(self, "full")
         else
-            local waveform = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_WAVEFORM)
-            waveform = waveform == "fast" and "fast" or "ui"
-            if clock.dimen then
-                UIManager:widgetRepaint(clock, clock.dimen.x, clock.dimen.y)
-                UIManager:setDirty(nil, waveform, clock.dimen:copy())
-            else
-                UIManager:setDirty(self, waveform)
-            end
+            refreshClockRegion(self.runtime, self)
         end
         self:_scheduleNextClockRefresh()
     end
@@ -184,6 +240,7 @@ function ReadingFolio:init()
     }
     self.background = Background.new(Constants)
     self.folio_scene = FolioScene.new()
+    self.theme_bundle = ThemeBundle.new(Constants, "1.6.0")
     self.menu_builder = Menu.new{
         constants = Constants,
         registry = self.registry,
@@ -236,11 +293,22 @@ function ReadingFolio:onDispatcherRegisterActions()
     })
 end
 
+function ReadingFolio:restoreRotationMode()
+    if Device.orig_rotation_mode then
+        Screen:setRotationMode(Device.orig_rotation_mode)
+        Device.orig_rotation_mode = nil
+    end
+end
+
+function ReadingFolio:onResume()
+    self:restoreRotationMode()
+end
+
 function ReadingFolio:onShowReadingFolio()
     self:showReceipt()
 end
 
-function ReadingFolio:showReceipt()
+function ReadingFolio:showReceipt(custom_style)
     local ui = self.ui
     UIManager:nextTick(function()
         if not ui or not ui.document then return end
@@ -252,6 +320,7 @@ function ReadingFolio:showReceipt()
             plugin = self,
             ui = ui,
             state = ui.view and ui.view.state,
+            custom_style = custom_style,
         }
         UIManager:show(self.quick_look_widget)
     end)
@@ -262,9 +331,13 @@ function ReadingFolio:getCustomPresets()
     return type(presets) == "table" and presets or {}
 end
 
-function ReadingFolio:saveCustomPreset(name)
+-- `allow_overwrite` must be set explicitly by callers that are updating a known
+-- preset ("Overwrite with current"). The save-as entry points leave it unset so a
+-- duplicate name is rejected instead of silently replacing the existing preset.
+function ReadingFolio:saveCustomPreset(name, allow_overwrite)
     if not name or name:match("%S") == nil then return false end
     local presets = self:getCustomPresets()
+    if presets[name] and not allow_overwrite then return false end
     presets[name] = {
         name = name,
         timestamp = os.time(),
@@ -284,6 +357,8 @@ function ReadingFolio:saveCustomPreset(name)
         font_delta_small = G_reader_settings:readSetting(Constants.FONT_DELTA_SMALL),
     }
     G_reader_settings:saveSetting(Constants.CUSTOM_PRESETS_SETTING, presets)
+    G_reader_settings:saveSetting(Constants.ACTIVE_CUSTOM_PRESET, name)
+    G_reader_settings:saveSetting(Constants.STYLE_SETTING, "custom")
     G_reader_settings:flush()
     return true
 end
@@ -309,6 +384,7 @@ function ReadingFolio:applyCustomPreset(name)
     restore(Constants.FONT_DELTA_BIG, preset.font_delta_big)
     restore(Constants.FONT_DELTA_MID, preset.font_delta_mid)
     restore(Constants.FONT_DELTA_SMALL, preset.font_delta_small)
+    G_reader_settings:saveSetting(Constants.ACTIVE_CUSTOM_PRESET, name)
     G_reader_settings:saveSetting(Constants.STYLE_SETTING, "custom")
     G_reader_settings:flush()
     self:showReceipt()
@@ -320,6 +396,9 @@ function ReadingFolio:deleteCustomPreset(name)
     if not presets[name] then return false end
     presets[name] = nil
     G_reader_settings:saveSetting(Constants.CUSTOM_PRESETS_SETTING, presets)
+    if G_reader_settings:readSetting(Constants.ACTIVE_CUSTOM_PRESET) == name then
+        G_reader_settings:delSetting(Constants.ACTIVE_CUSTOM_PRESET)
+    end
     G_reader_settings:flush()
     return true
 end
@@ -333,8 +412,40 @@ function ReadingFolio:renameCustomPreset(old_name, new_name)
     presets[new_name] = data
     presets[old_name] = nil
     G_reader_settings:saveSetting(Constants.CUSTOM_PRESETS_SETTING, presets)
+    if G_reader_settings:readSetting(Constants.ACTIVE_CUSTOM_PRESET) == old_name then
+        G_reader_settings:saveSetting(Constants.ACTIVE_CUSTOM_PRESET, new_name)
+    end
     G_reader_settings:flush()
     return true
+end
+
+function ReadingFolio:getThemeFolder()
+    return self.theme_bundle:folder()
+end
+
+function ReadingFolio:exportCustomTheme(name)
+    local presets = self:getCustomPresets()
+    local preset = presets[name]
+    if not preset then
+        return nil, "preset not found"
+    end
+    return self.theme_bundle:export(name, preset)
+end
+
+function ReadingFolio:importCustomTheme(path)
+    local name, preset = self.theme_bundle:import(path)
+    if not name or not preset then return nil, preset end
+    local presets = self:getCustomPresets()
+    local final_name = name
+    local index = 1
+    while presets[final_name] do
+        index = index + 1
+        final_name = string.format("%s (%d)", name, index)
+    end
+    presets[final_name] = preset
+    G_reader_settings:saveSetting(Constants.CUSTOM_PRESETS_SETTING, presets)
+    G_reader_settings:flush()
+    return final_name
 end
 
 function ReadingFolio:addToMainMenu(menu_items)
@@ -365,6 +476,9 @@ local function fallbackScreensaver(saver, original_show)
     local fallback = fallbackType()
     local prefixed_key = saver.prefix and saver.prefix ~= "" and (saver.prefix .. "screensaver_type") or nil
 
+    -- readSetting normally resolves through the LuaSettings metatable, so only put an
+    -- own field back if there really was one; otherwise clearing it is the clean restore.
+    local had_own_readSetting = rawget(settings, "readSetting") ~= nil
     local orig_readSetting = settings.readSetting
     settings.readSetting = function(self, key, default)
         if key == "screensaver_type" or (prefixed_key and key == prefixed_key) then
@@ -374,14 +488,19 @@ local function fallbackScreensaver(saver, original_show)
     end
 
     local event = saver.prefix and saver.prefix ~= "" and saver.prefix:sub(1, -2) or nil
-    if type(saver.setup) == "function" then
-        saver:setup(event, saver.event_message)
-    end
-    saver.screensaver_type = fallback
 
-    local ok, err = pcall(original_show, saver)
+    -- setup() and show() share one pcall on purpose: the stub above is process-global
+    -- state, so an error in either has to reach the restore below. Otherwise every later
+    -- settings read in the session keeps seeing the fallback screensaver type.
+    local ok, err = pcall(function()
+        if type(saver.setup) == "function" then
+            saver:setup(event, saver.event_message)
+        end
+        saver.screensaver_type = fallback
+        original_show(saver)
+    end)
 
-    settings.readSetting = orig_readSetting
+    settings.readSetting = had_own_readSetting and orig_readSetting or nil
     saver.screensaver_type = original_type
 
     if not ok then
@@ -390,6 +509,9 @@ local function fallbackScreensaver(saver, original_show)
 end
 
 function ReadingFolio:_showScreensaver(saver, original_show)
+    -- Whatever the outcome below, any chain left over from the previous suspend has to
+    -- go: it closes over that screensaver's widgets and would keep repainting them.
+    self:_stopScreensaverClockRefresh(saver)
     local ui = saver.ui or ReaderUI.instance
     if not ui or not ui.document then
         fallbackScreensaver(saver, original_show)
@@ -407,7 +529,7 @@ function ReadingFolio:_showScreensaver(saver, original_show)
     Device.screen_saver_mode = true
     local rotation = Screen:getRotationMode()
     local scene = self:_folioScene(ui)
-    local selected_style = scene and self.registry:get(scene.style_id) or self.renderer:selectedStyle()
+    local selected_style = scene and self.registry:resolve(scene.style_id) or self.renderer:selectedStyle()
     local landscape = selected_style and selected_style.defaults.landscape == true
     local use_screen_orientation = selected_style
         and selected_style.defaults.use_screen_orientation == true
@@ -421,9 +543,12 @@ function ReadingFolio:_showScreensaver(saver, original_show)
     if use_screen_orientation then
         Device.orig_rotation_mode = nil
         orig_dimen = nil
-    elseif landscape and bit.band(rotation, 1) == 0 then
+    -- getRotationMode() returns 0-3, so "% 2" is the odd/even test that bit.band(x, 1) did.
+    -- Same answer for every integer including negatives, and it drops the require("bit"):
+    -- the bit library is a LuaJIT extension that stock Lua 5.3+ does not ship.
+    elseif landscape and rotation % 2 == 0 then
         Screen:setRotationMode(Screen.DEVICE_ROTATED_CLOCKWISE or 1)
-    elseif not landscape and bit.band(rotation, 1) == 1 then
+    elseif not landscape and rotation % 2 == 1 then
         Screen:setRotationMode(Screen.DEVICE_ROTATED_UPRIGHT)
     else
         Device.orig_rotation_mode = nil
@@ -473,55 +598,46 @@ end
 
 function ReadingFolio:_setupScreensaverClockRefresh(saver, runtime)
     if not saver or not runtime or not runtime.clock_widget then return end
-    local mode = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_MODE) or "minute"
+    local mode = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_MODE) or "static"
     if mode == "static" then return end
 
-    if saver._reading_folio_clock_timer then
-        UIManager:unschedule(saver._reading_folio_clock_timer)
-        saver._reading_folio_clock_timer = nil
-    end
+    -- Screensaver is a singleton, so this runs again on every suspend with the same
+    -- `saver`. What used to be stored here was the result of UIManager:scheduleIn --
+    -- which returns nothing -- so the guard never fired and the unschedule in the
+    -- patched close() was dead: each sleep cycle started another chain, and the old
+    -- ones kept running because they only stop when screensaver_widget is nil, which
+    -- the newly shown screensaver had just made non-nil again. Keep the function
+    -- itself, which is also what UIManager:unschedule matches on.
+    self:_stopScreensaverClockRefresh(saver)
 
-    local clock = runtime.clock_widget
     local count = 0
 
     local function refreshClock()
-        if not saver.screensaver_widget or not clock then return end
-        local now_str = datetime.secondsToHour(os.time(), G_reader_settings:isTrue("twelve_hour_clock"))
-            or os.date("%H:%M")
-
-        if clock.setText then
-            clock:setText(now_str)
-        elseif clock._inner and clock._inner.setText then
-            clock._inner:setText(now_str)
-        else
-            clock.text = now_str
-        end
+        if not saver.screensaver_widget then return end
+        if not applyClockText(runtime) then return end
 
         count = count + 1
-        local full_refresh_interval = tonumber(G_reader_settings:readSetting(
-            Constants.CLOCK_FULL_REFRESH_INTERVAL
-        )) or 30
+        local full_refresh_interval = clockFullRefreshInterval()
 
         if full_refresh_interval > 0 and count >= full_refresh_interval then
             count = 0
             UIManager:setDirty(saver.screensaver_widget, "full")
         else
-            local waveform = G_reader_settings:readSetting(Constants.CLOCK_REFRESH_WAVEFORM)
-            waveform = waveform == "fast" and "fast" or "ui"
-            if clock.dimen then
-                UIManager:widgetRepaint(clock, clock.dimen.x, clock.dimen.y)
-                UIManager:setDirty(nil, waveform, clock.dimen:copy())
-            else
-                UIManager:setDirty(saver.screensaver_widget, waveform)
-            end
+            refreshClockRegion(runtime, saver.screensaver_widget)
         end
 
-        local delay = 61 - tonumber(os.date("%S"))
-        saver._reading_folio_clock_timer = UIManager:scheduleIn(delay, refreshClock)
+        UIManager:scheduleIn(61 - tonumber(os.date("%S")), refreshClock)
     end
 
-    local delay = 61 - tonumber(os.date("%S"))
-    saver._reading_folio_clock_timer = UIManager:scheduleIn(delay, refreshClock)
+    saver._reading_folio_clock_action = refreshClock
+    UIManager:scheduleIn(61 - tonumber(os.date("%S")), refreshClock)
+end
+
+function ReadingFolio:_stopScreensaverClockRefresh(saver)
+    if saver and saver._reading_folio_clock_action then
+        UIManager:unschedule(saver._reading_folio_clock_action)
+        saver._reading_folio_clock_action = nil
+    end
 end
 
 function ReadingFolio:_installScreensaverAdapter()
@@ -538,10 +654,8 @@ function ReadingFolio:_installScreensaverAdapter()
         if orig_close then
             Screensaver._reading_folio_original_close = orig_close
             Screensaver.close = function(saver)
-                if saver and saver._reading_folio_clock_timer then
-                    UIManager:unschedule(saver._reading_folio_clock_timer)
-                    saver._reading_folio_clock_timer = nil
-                end
+                local plugin = Screensaver._reading_folio_plugin
+                if plugin then plugin:_stopScreensaverClockRefresh(saver) end
                 return Screensaver._reading_folio_original_close(saver)
             end
         end

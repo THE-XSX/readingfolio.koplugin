@@ -127,16 +127,15 @@ end
 function Renderer:selectedStyle()
     local style_setting = G_reader_settings:readSetting(self.constants.STYLE_SETTING)
     if style_setting == "random" then
-        local candidates = {}
-        for _, style in ipairs(self.registry:list()) do
-            if style.id ~= "custom" then table.insert(candidates, style) end
-        end
-        if #candidates > 0 then
-            return candidates[math.random(#candidates)]
-        end
+        local style = self.registry:randomStyle()
+        if style then return style end
     end
     local style_id = self.registry:normalize(style_setting, self.constants)
-    return self.registry:get(style_id)
+    -- normalize() passes "random" straight through, so resolve() rather than get(). Only
+    -- reachable if randomStyle() came back empty (a registry holding nothing but
+    -- "custom"), which is why the DEFAULT_STYLE tail is a belt-and-braces guard rather
+    -- than a fix for anything observed.
+    return self.registry:resolve(style_id) or self.registry:get(self.constants.DEFAULT_STYLE)
 end
 
 function Renderer:prefersLandscape()
@@ -263,17 +262,17 @@ function Renderer:_footer(data, layout, theme, fonts, options)
         fgcolor = theme.muted,
         padding = 0,
     } or nil
-    if clock and options and options.runtime then
-        options.runtime.clock_widget = clock
-    end
     if not battery and not clock then return nil end
     local left_width = battery and battery:getSize().w or 0
     local right_width = clock and clock:getSize().w or 0
+    -- The clock is handed back rather than registered here: this row is built for every
+    -- style but only reaches the screen when the style keeps the common footer, and
+    -- refreshing a widget that was never painted repaints the whole card for nothing.
     return HorizontalGroup:new{
         battery or HorizontalSpan:new{ width = 0 },
         HorizontalSpan:new{ width = math.max(0, layout.content_width - left_width - right_width) },
         clock or HorizontalSpan:new{ width = 0 },
-    }
+    }, clock
 end
 
 function Renderer:_context(data, style, layout, theme, fonts, options)
@@ -292,6 +291,7 @@ function Renderer:_context(data, style, layout, theme, fonts, options)
         cover = self:_coverWidget(data, layout, style.defaults)
     end
 
+    local footer, footer_clock = self:_footer(data, layout, theme, fonts, options)
     local context = {
         data = data,
         layout = layout,
@@ -299,13 +299,44 @@ function Renderer:_context(data, style, layout, theme, fonts, options)
         fonts = fonts,
         cover = cover,
         highlight_widgets = highlight_widgets,
-        footer = self:_footer(data, layout, theme, fonts, options),
+        footer = footer,
+        footer_clock = footer_clock,
         translate = self.translate,
         scaled = scaled,
         custom_layout = self.custom_layout,
         editor_selected = options and options.editor_selected,
         runtime = options and options.runtime,
     }
+    -- Registers the widget that shows the time, how to rebuild its full text when the
+    -- minute changes, and the row it sits in; returns that row wrapped so it can be
+    -- repainted on its own. `reserve_width` pins the repainted area for rows whose width
+    -- follows the text: in 12-hour mode the time narrows once a day (12:59 -> 1:00) and
+    -- without a pinned area the discarded digit would sit on screen until the next full
+    -- refresh. FrameContainer:getSize ignores `width`, so this widens what gets painted
+    -- and dirtied without moving anything.
+    --
+    -- The frame and the formatter are both what make a partial refresh possible at all.
+    -- A plain TextWidget never records where it was painted (it has no .dimen), so
+    -- without the frame there is nothing to hand setDirty and the refresh falls back to
+    -- the whole card. And several styles put the time in a widget shared with the
+    -- battery reading or the page count, where replacing the text with just the time
+    -- would delete the rest of the line -- hence the formatter, which rebuilds it whole.
+    function context.registerClock(widget, formatter, row, reserve_width)
+        row = row or widget
+        if not (context.runtime and widget) then return row end
+        local region = FrameContainer:new{
+            bordersize = 0,
+            padding = 0,
+            margin = 0,
+            background = theme.background,
+            width = reserve_width,
+            row,
+        }
+        context.runtime.clock_widget = widget
+        context.runtime.clock_format = formatter
+        context.runtime.clock_region = region
+        return region
+    end
     function context.coverFor(max_width, max_height)
         return self:_coverWidget(data, layout, style.defaults, max_width, max_height)
     end
@@ -409,7 +440,8 @@ function Renderer:build(ui, state, style, options)
         end
         if ctx.footer then
             table.insert(children, ctx.spacer(layout.scaled(12)))
-            table.insert(children, ctx.footer)
+            table.insert(children, ctx.registerClock(ctx.footer_clock, nil, ctx.footer,
+                layout.content_width))
         end
         content = VerticalGroup:new(children)
     end
@@ -437,7 +469,7 @@ function Renderer:build(ui, state, style, options)
 
     local radius = frame.radius or 0
     local frame_background = frame.background
-    if not frame.transparent and frame_background == nil then frame_background = theme.background end
+    if not frame.transparent and not frame_background then frame_background = theme.background end
     local final = FrameContainer:new{
         radius = radius,
         bordersize = border,

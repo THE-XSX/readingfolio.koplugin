@@ -20,6 +20,7 @@ return {
     FONT_DELTA_SMALL = "reading_folio_font_delta_small",
     CUSTOM_LAYOUT_SETTING = "reading_folio_custom_layout",
     CUSTOM_PRESETS_SETTING = "reading_folio_custom_presets",
+    ACTIVE_CUSTOM_PRESET = "reading_folio_active_custom_preset",
     CUSTOM_EDITOR_MOVE_STEP = "reading_folio_editor_move_step",
     CUSTOM_EDITOR_ROTATE_STEP = "reading_folio_editor_rotate_step",
     CUSTOM_BG_PATH = "reading_folio_custom_background_path",

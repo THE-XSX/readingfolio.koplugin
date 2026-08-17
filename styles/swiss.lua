@@ -129,23 +129,29 @@ function Style.render(ctx)
     }
     -- d.battery/d.clock arrive already emptied when their display toggles are
     -- off, so joining the non-empty ones honors the display-item settings.
-    local status_parts = {}
-    if d.battery ~= "" then table.insert(status_parts, d.battery) end
-    if d.clock ~= "" then table.insert(status_parts, d.clock) end
+    -- Built through a function so the minute refresh can rebuild the whole line:
+    -- this one widget also carries the battery reading.
+    local function statusText(now)
+        local status_parts = {}
+        if d.battery ~= "" then table.insert(status_parts, d.battery) end
+        if d.clock ~= "" then table.insert(status_parts, now or d.clock) end
+        return table.concat(status_parts, "  ")
+    end
     local clock = TextWidget:new{
-        text = table.concat(status_parts, "  "),
+        text = statusText(),
         face = Font:getFace("cfont", f.small - s(2)),
         fgcolor = t.muted,
         padding = 0,
     }
-    if ctx.runtime and d.clock ~= "" then
-        ctx.runtime.clock_widget = clock
-    end
-    table.insert(children, HorizontalGroup:new{
+    local status_row = HorizontalGroup:new{
         today,
         HorizontalSpan:new{ width = math.max(0, width - today:getSize().w - clock:getSize().w) },
         clock,
-    })
+    }
+    if d.clock ~= "" then
+        status_row = ctx.registerClock(clock, statusText, status_row, width)
+    end
+    table.insert(children, status_row)
 
     local vertical_padding = l.ratio_mode == "fullscreen" and s(48) or s(20)
     local right = FrameContainer:new{

@@ -1,0 +1,8 @@
+# Build output of tools/package.py — a ~1 MiB binary that is regenerated on every
+# release, so it belongs on the Release page rather than in the history.
+readingfolio.koplugin.zip
+
+# Local test harness output and editor droppings.
+__pycache__/
+.DS_Store
+Thumbs.db

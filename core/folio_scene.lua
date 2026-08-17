@@ -33,13 +33,27 @@ function FolioScene:resolve(ui, follow)
             or snapshot.enabled ~= true then
         return nil
     end
-    local mapped = SCENES[snapshot.scene]
-    if not mapped then return nil end
+
+    local target_style_id = snapshot.style_id
+    local content_mode = snapshot.content_mode
+
+    if not target_style_id and snapshot.scene then
+        local mapped = SCENES[snapshot.scene]
+        if mapped then
+            target_style_id = mapped.style_id
+            content_mode = content_mode or mapped.content_mode
+        else
+            target_style_id = snapshot.scene
+        end
+    end
+
+    if not target_style_id then return nil end
+
     return {
-        id = snapshot.scene,
-        mode = snapshot.mode,
-        style_id = mapped.style_id,
-        content_mode = mapped.content_mode,
+        id = snapshot.scene or target_style_id,
+        mode = snapshot.mode or target_style_id,
+        style_id = target_style_id,
+        content_mode = content_mode or (target_style_id == "quote" and "highlight_progress" or "reading_folio"),
     }
 end
 

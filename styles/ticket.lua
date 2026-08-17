@@ -64,7 +64,7 @@ function Style.render(ctx)
         padding = 0,
     }
     local number = TextWidget:new{
-        text = string.format(tr("NO. %04d"), math.max(0, d.page)),
+        text = string.format(tr("NO. %04d"), math.max(0, d.page or 0)),
         face = Font:getFace("cfont", f.small),
         fgcolor = t.foreground,
         padding = 0,

@@ -225,18 +225,22 @@ function Style.render(ctx)
         fgcolor = t.muted,
         padding = 0,
     }
-    local status_parts = {}
-    if d.clock ~= "" then table.insert(status_parts, d.clock) end
-    if d.battery_text ~= "" then table.insert(status_parts, d.battery_text) end
+    -- The clock shares this widget with the battery reading, so the minute refresh
+    -- rebuilds the line instead of replacing it. d.battery honors the battery display
+    -- toggle; d.battery_text is unconditional and is meant for styles with a fixed
+    -- power slot.
+    local function statusText(now)
+        local status_parts = {}
+        if d.clock ~= "" then table.insert(status_parts, now or d.clock) end
+        if d.battery ~= "" then table.insert(status_parts, d.battery) end
+        return table.concat(status_parts, " · ")
+    end
     local bottom_right = TextWidget:new{
-        text = table.concat(status_parts, " · "),
+        text = statusText(),
         face = Font:getFace("cfont", f.small),
         fgcolor = t.muted,
         padding = 0,
     }
-    if ctx.runtime and d.clock ~= "" then
-        ctx.runtime.clock_widget = bottom_right
-    end
     local bottom_row = HorizontalGroup:new{
         bottom_left,
         HorizontalSpan:new{
@@ -244,6 +248,9 @@ function Style.render(ctx)
         },
         bottom_right,
     }
+    if d.clock ~= "" then
+        bottom_row = ctx.registerClock(bottom_right, statusText, bottom_row, inner_width)
+    end
 
     local rule = ctx.progress(inner_width, s(1), 1, { background = t.faint, fill = t.faint })
 

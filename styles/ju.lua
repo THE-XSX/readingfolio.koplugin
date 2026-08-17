@@ -119,25 +119,31 @@ function Style.render(ctx)
         })
     end
 
-    local status_parts = {}
-    if d.show.today_time then
-        table.insert(status_parts,
-            string.format(tr("TODAY %d MIN"), math.floor((d.today_duration or 0) / 60)))
-    end
-    if d.clock ~= "" then table.insert(status_parts, d.clock) end
-    if d.battery_text ~= "" then
-        table.insert(status_parts, tr("POWER") .. " " .. d.battery_text)
+    -- One widget carries the whole status line, so the minute refresh has to rebuild
+    -- it rather than replace it with the bare time. d.battery already honors the
+    -- battery display toggle; d.battery_text does not.
+    local function statusText(now)
+        local status_parts = {}
+        if d.show.today_time then
+            table.insert(status_parts,
+                string.format(tr("TODAY %d MIN"), math.floor((d.today_duration or 0) / 60)))
+        end
+        if d.clock ~= "" then table.insert(status_parts, now or d.clock) end
+        if d.battery ~= "" then
+            table.insert(status_parts, tr("POWER") .. " " .. d.battery)
+        end
+        return table.concat(status_parts, "    ")
     end
     local clock_widget = TextWidget:new{
-        text = table.concat(status_parts, "    "),
+        text = statusText(),
         face = Font:getFace("cfont", f.small),
         fgcolor = t.muted,
         padding = 0,
     }
-    if ctx.runtime and d.clock ~= "" then
-        ctx.runtime.clock_widget = clock_widget
-    end
     local status = centered(inner_width, clock_widget)
+    if d.clock ~= "" then
+        status = ctx.registerClock(clock_widget, statusText, status, inner_width)
+    end
 
     local poem = centered(inner_width, TextWidget:new{
         text = tr("Picking chrysanthemums by the eastern hedge, the southern hills come into view."),

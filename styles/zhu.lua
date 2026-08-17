@@ -183,18 +183,20 @@ function Style.render(ctx)
         bold = true,
         padding = 0,
     }
-    local status_parts = {}
-    if d.clock ~= "" then table.insert(status_parts, d.clock) end
-    if d.battery_text ~= "" then table.insert(status_parts, d.battery_text) end
+    -- Rebuilt whole on each minute refresh: the battery reading lives in this widget
+    -- too. d.battery honors the battery display toggle, d.battery_text does not.
+    local function statusText(now)
+        local status_parts = {}
+        if d.clock ~= "" then table.insert(status_parts, now or d.clock) end
+        if d.battery ~= "" then table.insert(status_parts, d.battery) end
+        return table.concat(status_parts, " · ")
+    end
     local status_widget = TextWidget:new{
-        text = table.concat(status_parts, " · "),
+        text = statusText(),
         face = Font:getFace("cfont", f.small),
         fgcolor = t.muted,
         padding = 0,
     }
-    if ctx.runtime and d.clock ~= "" then
-        ctx.runtime.clock_widget = status_widget
-    end
     local bottom_row = HorizontalGroup:new{
         align = "bottom",
         percent_widget,
@@ -203,6 +205,9 @@ function Style.render(ctx)
         },
         status_widget,
     }
+    if d.clock ~= "" then
+        bottom_row = ctx.registerClock(status_widget, statusText, bottom_row, inner_width)
+    end
 
     local poem = TextWidget:new{
         text = tr("Ten thousand strikes and still unbent, whatever wind may blow."),

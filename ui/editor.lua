@@ -3,6 +3,7 @@ local ButtonDialog = require("ui/widget/buttondialog")
 local ButtonTable = require("ui/widget/buttontable")
 local Device = require("device")
 local DocumentRegistry = require("document/documentregistry")
+local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local MultiConfirmBox = require("ui/widget/multiconfirmbox")
 local OverlapGroup = require("ui/widget/overlapgroup")
@@ -10,6 +11,49 @@ local TopContainer = require("ui/widget/container/topcontainer")
 local UIManager = require("ui/uimanager")
 
 local Screen = Device.screen
+
+local EditorPreview = InputContainer:extend{
+    modal = true,
+    name = "reading_folio_editor_preview",
+    covers_fullscreen = true,
+}
+
+function EditorPreview:init()
+    self.dimen = Screen:getSize()
+    local style = self.plugin.registry:get("custom")
+    local receipt = self.plugin.renderer:build(self.ui, self.state, style, {
+        data = self.preview_data,
+        editor_selected = nil,
+    })
+    self[1] = self.plugin.background:compose(self.ui, receipt, false, {
+        random_image = self.random_background,
+    })
+    if Device:hasKeys() then
+        self.key_events.AnyKeyPressed = {{ Device.input.group.Any }}
+    end
+    if Device:isTouchDevice() then
+        local function fullScreenGesture(name)
+            return GestureRange:new{ ges = name, range = function() return self.dimen end }
+        end
+        self.ges_events.Tap = { fullScreenGesture("tap") }
+        self.ges_events.Swipe = { fullScreenGesture("swipe") }
+        self.ges_events.MultiSwipe = { fullScreenGesture("multiswipe") }
+    end
+end
+
+function EditorPreview:onClose()
+    UIManager:close(self)
+    if self.editor then
+        local dirty_widget = self.plugin.background:isTranslucent() and "all" or self.editor
+        UIManager:setDirty(dirty_widget, "ui")
+    end
+    return true
+end
+
+EditorPreview.onTap = EditorPreview.onClose
+EditorPreview.onSwipe = EditorPreview.onClose
+EditorPreview.onMultiSwipe = EditorPreview.onClose
+EditorPreview.onAnyKeyPressed = EditorPreview.onClose
 
 local Editor = InputContainer:extend{
     -- ButtonDialog and PathChooser are non-modal. Keeping the editor in the
@@ -167,12 +211,29 @@ function Editor:_showStepSettingsDialog()
     UIManager:show(dialog)
 end
 
+function Editor:_showFullscreenPreview()
+    if Device:hasEinkScreen() then
+        Screen:clear()
+        Screen:refreshFull(0, 0, Screen:getWidth(), Screen:getHeight())
+    end
+    local preview_widget = EditorPreview:new{
+        plugin = self.plugin,
+        ui = self.ui,
+        state = self.state,
+        preview_data = self.preview_data,
+        random_background = self.random_background,
+        editor = self,
+    }
+    UIManager:show(preview_widget, "full")
+end
+
 function Editor:_topBar()
     return ButtonTable:new{
         width = self.dimen.w,
         show_parent = self,
         buttons = {{
             { text = self.translate("Close"), callback = function() self:onClose() end },
+            { text = self.translate("Preview"), callback = function() self:_showFullscreenPreview() end },
             { text = self.translate("Wallpaper"), callback = function() self:_showWallpaperDialog() end },
             { text = self.translate("Items"), callback = function() self:_showItemsDialog() end },
             { text = self.translate("Steps"), callback = function() self:_showStepSettingsDialog() end },
